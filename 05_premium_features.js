@@ -88,15 +88,15 @@ const featureHeaders = {
 for (const id in featureHeaders) {
     const data = featureHeaders[id];
     const regex = new RegExp('<section id="' + id + '">', 'g');
-    const headerHTML = 
-    '<section id="' + id + '">' +
+    const headerHTML =
+        '<section id="' + id + '">' +
         '<div class="feature-header">' +
-            '<div class="feature-header-left">' +
-                '<div class="feature-category">' + data.cat + '</div>' +
-                '<h2>' + data.title + '</h2>' +
-                '<p>' + data.desc + '</p>' +
-            '</div>' +
-            (data.action ? '<div class="feature-header-right">' + data.action + '</div>' : '') +
+        '<div class="feature-header-left">' +
+        '<div class="feature-category">' + data.cat + '</div>' +
+        '<h2>' + data.title + '</h2>' +
+        '<p>' + data.desc + '</p>' +
+        '</div>' +
+        (data.action ? '<div class="feature-header-right">' + data.action + '</div>' : '') +
         '</div>';
     html = html.replace(regex, headerHTML);
 }

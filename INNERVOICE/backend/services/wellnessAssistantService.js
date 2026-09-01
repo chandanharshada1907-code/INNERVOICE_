@@ -241,45 +241,55 @@ async function generateAssistantResponse(context, userMessage) {
 
     const systemPrompt = buildSystemPrompt(context);
 
-    // 1. Google Gemini API
+    // 1. Google Gemini API — models confirmed available via ListModels + direct test
     if (geminiKey) {
-        try {
-            const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${geminiKey}`;
-            const res = await fetch(url, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    contents: [
-                        {
-                            role: "user",
-                            parts: [{ text: `${systemPrompt}\n\nUser: ${userMessage}` }]
+        const geminiModels = [
+            "gemini-3.6-flash",
+            "gemini-flash-latest",
+            "gemini-2.5-flash-lite"
+        ];
+        for (const model of geminiModels) {
+            try {
+                const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${geminiKey}`;
+                const res = await fetch(url, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        contents: [
+                            {
+                                role: "user",
+                                parts: [{ text: `${systemPrompt}\n\nUser: ${userMessage}` }]
+                            }
+                        ],
+                        generationConfig: {
+                            temperature: 0.7,
+                            maxOutputTokens: 800
                         }
-                    ],
-                    generationConfig: {
-                        temperature: 0.7,
-                        maxOutputTokens: 800
-                    }
-                })
-            });
+                    })
+                });
 
-            if (res.ok) {
-                const data = await res.json();
-                if (data && data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts) {
-                    const text = data.candidates[0].content.parts.map(p => p.text).join("").trim();
-                    if (text) {
-                        return {
-                            reply: text,
-                            isCrisis: false,
-                            available: true
-                        };
+                if (res.ok) {
+                    const data = await res.json();
+                    if (data && data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts) {
+                        const text = data.candidates[0].content.parts.map(p => p.text).join("").trim();
+                        if (text) {
+                            return {
+                                reply: text,
+                                isCrisis: false,
+                                available: true
+                            };
+                        }
                     }
+                } else {
+                    const errText = await res.text().catch(() => "");
+                    console.error(`Gemini [${model}] API error:`, res.status, errText.substring(0, 300));
+                    // If 404 (model not found), try next model; otherwise stop
+                    if (res.status !== 404) break;
                 }
-            } else {
-                const errText = await res.text().catch(() => "");
-                console.error("Gemini API error response:", res.status, errText);
+            } catch (err) {
+                console.error(`Gemini [${model}] request failed:`, err.message);
+                break;
             }
-        } catch (err) {
-            console.error("Gemini API request failed:", err);
         }
     }
 
@@ -317,15 +327,16 @@ async function generateAssistantResponse(context, userMessage) {
                 }
             } else {
                 const errText = await res.text().catch(() => "");
-                console.error("OpenAI API error response:", res.status, errText);
+                console.error("OpenAI API error response:", res.status, errText.substring(0, 300));
             }
         } catch (err) {
-            console.error("OpenAI API request failed:", err);
+            console.error("OpenAI API request failed:", err.message);
         }
     }
 
+    // All providers failed — return a short friendly message. Real error is logged above.
     return {
-        reply: "AI service is currently unavailable. Please verify your AI API key and connection.",
+        reply: "I'm having a little trouble connecting right now. 🌿 Please try again in a moment — I'm always here for you.",
         isCrisis: false,
         available: false
     };

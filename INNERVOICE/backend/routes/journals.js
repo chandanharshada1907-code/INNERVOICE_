@@ -313,10 +313,10 @@ router.put("/:id", verifyToken, (req, res) => {
 // ======================================
 // POST /api/journals/analyze
 // AI Sentiment & Reflection Analysis
-// Checks if AI provider is configured
+// Uses Gemini (primary) or OpenAI (fallback)
 // ======================================
 
-router.post("/analyze", verifyToken, (req, res) => {
+router.post("/analyze", verifyToken, async (req, res) => {
 
     const userId = req.user.user_id || req.user.id;
 
@@ -337,22 +337,125 @@ router.post("/analyze", verifyToken, (req, res) => {
         });
     }
 
-    // Check if an AI service/API key (OpenAI/Gemini) is configured in environment
-    const aiKey = process.env.OPENAI_API_KEY || process.env.GEMINI_API_KEY || process.env.AI_API_KEY;
+    const geminiKey = process.env.GEMINI_API_KEY || process.env.AI_API_KEY;
+    const openaiKey = process.env.OPENAI_API_KEY;
 
-    if (!aiKey) {
+    if (!geminiKey && !openaiKey) {
         return res.status(200).json({
             success: false,
             available: false,
-            message: "AI service is not configured. An API key (OpenAI/Gemini) is required in the backend environment."
+            message: "AI analysis is not available right now. Please try again later."
         });
     }
 
-    // If an external service is configured in the future, handle it here
+    const systemPrompt = `You are a compassionate wellness journal analysis assistant for INNERVOICE.
+Analyze the following journal entry. Return ONLY a JSON object with exactly two keys:
+- "sentiment": one of Positive, Negative, Mixed, Neutral, Reflective
+- "insight": a warm, supportive 2-3 sentence reflection on the journal entry`;
+
+    // Robust JSON extractor — finds the first { } block even if Gemini adds surrounding text
+    function extractJSON(text) {
+        if (!text) return null;
+        // Strip markdown fences
+        let s = text.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/```\s*$/i, "").trim();
+        // Try direct parse first
+        try { const p = JSON.parse(s); if (p.sentiment && p.insight) return p; } catch(e) { /* continue */ }
+        // Find first { ... } block in the text
+        const start = s.indexOf("{");
+        const end = s.lastIndexOf("}");
+        if (start >= 0 && end > start) {
+            try {
+                const p = JSON.parse(s.substring(start, end + 1));
+                if (p.sentiment && p.insight) return p;
+            } catch(e) { /* continue */ }
+        }
+        return null;
+    }
+
+    // --- 1. Try Google Gemini (with JSON mode enforced) ---
+    if (geminiKey) {
+        try {
+            const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${geminiKey}`;
+            const geminiRes = await fetch(url, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    contents: [{ role: "user", parts: [{ text: `${systemPrompt}\n\nJournal Entry:\n${journalText.substring(0, 3000)}` }] }],
+                    generationConfig: {
+                        temperature: 0.5,
+                        maxOutputTokens: 400,
+                        responseMimeType: "application/json"
+                    }
+                })
+            });
+
+            if (geminiRes.ok) {
+                const geminiData = await geminiRes.json();
+                const rawText = (geminiData?.candidates?.[0]?.content?.parts?.[0]?.text || "").trim();
+                const parsed = extractJSON(rawText);
+                if (parsed) {
+                    return res.status(200).json({
+                        success: true,
+                        available: true,
+                        analysis: { sentiment: parsed.sentiment, insight: parsed.insight }
+                    });
+                } else {
+                    console.error("Journal analyze: Gemini JSON extraction failed | Raw:", rawText.substring(0, 200));
+                }
+            } else {
+                const errBody = await geminiRes.text().catch(() => "");
+                console.error("Journal analyze: Gemini API error", geminiRes.status, errBody.substring(0, 300));
+            }
+        } catch (err) {
+            console.error("Journal analyze: Gemini request failed:", err.message);
+        }
+    }
+
+    // --- 2. Fallback: OpenAI ---
+    if (openaiKey) {
+        try {
+            const oaiRes = await fetch("https://api.openai.com/v1/chat/completions", {
+                method: "POST",
+                headers: { "Content-Type": "application/json", "Authorization": `Bearer ${openaiKey}` },
+                body: JSON.stringify({
+                    model: "gpt-4o-mini",
+                    messages: [
+                        { role: "system", content: systemPrompt },
+                        { role: "user", content: `Journal Entry:\n${journalText.substring(0, 3000)}` }
+                    ],
+                    temperature: 0.5,
+                    max_tokens: 400,
+                    response_format: { type: "json_object" }
+                })
+            });
+
+            if (oaiRes.ok) {
+                const oaiData = await oaiRes.json();
+                const rawText = (oaiData?.choices?.[0]?.message?.content || "").trim();
+                const parsed = extractJSON(rawText);
+                if (parsed) {
+                    return res.status(200).json({
+                        success: true,
+                        available: true,
+                        analysis: { sentiment: parsed.sentiment, insight: parsed.insight }
+                    });
+                } else {
+                    console.error("Journal analyze: OpenAI JSON extraction failed");
+                }
+            } else {
+                const errBody = await oaiRes.text().catch(() => "");
+                console.error("Journal analyze: OpenAI API error", oaiRes.status, errBody.substring(0, 300));
+            }
+        } catch (err) {
+            console.error("Journal analyze: OpenAI request failed:", err.message);
+        }
+    }
+
+    // All providers failed — return friendly message, log technical error server-side
     return res.status(200).json({
         success: false,
         available: false,
-        message: "AI service provider integration pending."
+        message: "AI reflection is temporarily unavailable. Please try again in a moment."
     });
 
 });

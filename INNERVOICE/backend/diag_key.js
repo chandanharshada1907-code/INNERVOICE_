@@ -1,0 +1,14 @@
+const fs = require('fs');
+const env = fs.readFileSync('.env', 'utf8');
+const line = env.split('\n').find(l => l.startsWith('GEMINI_API_KEY=')) || '';
+const val = line.substring('GEMINI_API_KEY='.length);
+console.log('Line length:', line.length);
+console.log('Raw value length:', val.length);
+console.log('Trimmed length:', val.trim().length);
+console.log('Has leading space:', val !== val.trimStart());
+console.log('Has trailing space/CR:', val !== val.trimEnd());
+console.log('First 4 chars (safe):', JSON.stringify(val.substring(0,4)));
+console.log('Has double quotes:', val.includes('"'));
+console.log('Has single quotes:', val.includes("'"));
+console.log('Has carriage return:', val.includes('\r'));
+console.log('Has newline mid-value:', val.replace(/\r?\n$/,'').includes('\n'));
