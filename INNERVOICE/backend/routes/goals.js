@@ -1,4 +1,4 @@
-﻿const express = require("express");
+const express = require("express");
 const db = require("../db");
 const verifyToken = require("../middleware/auth");
 const { awardXP, evaluateAchievements } = require("../services/achievementService");
@@ -13,6 +13,13 @@ const promiseDb = db.promise();
 // Ensure user_daily_challenges table exists
 async function initDailyChallengesTable() {
     try {
+        // Fast check if table already exists to avoid MySQL 8.4 foreign key parsing warnings
+        const [tables] = await promiseDb.query("SHOW TABLES LIKE 'user_daily_challenges'");
+        if (tables && tables.length > 0) {
+            return; // Table already exists in DB, skip creation
+        }
+
+        await promiseDb.query("SET FOREIGN_KEY_CHECKS = 0;");
         await promiseDb.query(`
             CREATE TABLE IF NOT EXISTS user_daily_challenges (
                 id INT AUTO_INCREMENT PRIMARY KEY,
@@ -33,6 +40,7 @@ async function initDailyChallengesTable() {
                 UNIQUE KEY uq_user_challenge_day (user_id, challenge_code, challenge_date)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
         `);
+        await promiseDb.query("SET FOREIGN_KEY_CHECKS = 1;");
     } catch (e) {
         console.warn("user_daily_challenges table init warning:", e.message);
     }

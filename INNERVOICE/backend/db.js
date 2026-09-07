@@ -9,6 +9,14 @@ if (envResult && envResult.error) {
 
 const mysql = require("mysql2");
 
+// Configure SSL for Cloud MySQL (Aiven, AWS RDS, Railway) while preserving non-SSL for local XAMPP
+const isCloudHost = process.env.DB_HOST && (
+    process.env.DB_HOST.includes("aivencloud.com") ||
+    process.env.DB_HOST.includes("amazonaws.com") ||
+    process.env.DB_HOST.includes("railway.app")
+);
+const useSSL = process.env.DB_SSL === "true" || process.env.DB_SSL === "required" || isCloudHost;
+
 const pool = mysql.createPool({
     host:               process.env.DB_HOST     || "localhost",
     user:               process.env.DB_USER     || "root",
@@ -18,7 +26,8 @@ const pool = mysql.createPool({
     charset:            "utf8mb4",
     waitForConnections: true,
     connectionLimit:    10,
-    queueLimit:         0
+    queueLimit:         0,
+    ...(useSSL ? { ssl: { rejectUnauthorized: false } } : {})
 });
 
 // Force utf8mb4 on every new connection so emoji (😊 🎯 🔥) are stored correctly
