@@ -39,17 +39,26 @@ const app = express();
 const frontendRoot = path.resolve(__dirname, "..", "..");
 
 // ─────────────────────────────────────────────────────────────
-// CORS — Allow requests from any localhost origin so the
-// frontend (opened as a file or dev server) can call the API.
+// CORS — Configured for both local development and production
+// Allowed production origins can be passed via ALLOWED_ORIGINS (comma-separated)
+// or FRONTEND_URL environment variables.
 // ─────────────────────────────────────────────────────────────
+const allowedOriginsFromEnv = (process.env.ALLOWED_ORIGINS || process.env.FRONTEND_URL || "")
+    .split(",")
+    .map(s => s.trim())
+    .filter(Boolean);
+
 app.use(cors({
     origin: function(origin, callback) {
-        // Allow requests with no origin (file://, Postman) and any localhost
-        if (!origin || /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) {
-            callback(null, true);
-        } else {
-            callback(new Error("Not allowed by CORS"));
+        // Allow requests with no origin (file://, mobile apps, Postman) and local dev origins
+        if (!origin || /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) {
+            return callback(null, true);
         }
+        // Allow production origins configured via environment variables
+        if (allowedOriginsFromEnv.length > 0 && allowedOriginsFromEnv.includes(origin)) {
+            return callback(null, true);
+        }
+        callback(new Error("Not allowed by CORS"));
     },
     credentials: true
 }));
