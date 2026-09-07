@@ -225,7 +225,8 @@ async function updatePlanProgress(planId) {
 // GET /api/daily-plan
 router.get("/", verifyToken, async (req, res) => {
     try {
-        const userId = req.user.id;
+        const userId = req.user.user_id || req.user.id;
+        if (!userId) return res.status(401).json({ success: false, message: "Unauthorized." });
         const today = new Date().toISOString().slice(0, 10);
         
         let [planRes] = await db.promise().query("SELECT * FROM daily_plans WHERE user_id = ? AND plan_date = ?", [userId, today]);
@@ -235,39 +236,49 @@ router.get("/", verifyToken, async (req, res) => {
             [planRes] = await db.promise().query("SELECT * FROM daily_plans WHERE id = ?", [newPlanId]);
         }
         
-        const plan = planRes[0];
+        const plan = planRes && planRes.length > 0 ? planRes[0] : null;
+        if (!plan) {
+            return res.json({
+                success: true,
+                plan: null,
+                activities: [],
+                totalActivities: 0,
+                completedActivities: 0
+            });
+        }
         
         const [items] = await db.promise().query("SELECT * FROM daily_plan_items WHERE daily_plan_id = ? ORDER BY id ASC", [plan.id]);
         
         res.json({
             success: true,
             plan: plan,
-            activities: items,
-            totalActivities: items.length,
-            completedActivities: items.filter(i => i.completed).length
+            activities: items || [],
+            totalActivities: items ? items.length : 0,
+            completedActivities: items ? items.filter(i => i.completed).length : 0
         });
         
     } catch (err) {
         console.error(err);
-        res.status(500).json({ success: false, message: "Server error retrieving daily plan: " + err.message, stack: err.stack });
+        res.status(500).json({ success: false, message: "Server error retrieving daily plan: " + err.message });
     }
 });
 
 // POST /api/daily-plan/generate
 router.post("/generate", verifyToken, async (req, res) => {
     try {
-        const userId = req.user.id;
+        const userId = req.user.user_id || req.user.id;
+        if (!userId) return res.status(401).json({ success: false, message: "Unauthorized." });
         await generatePlanForUser(userId);
         
         const today = new Date().toISOString().slice(0, 10);
         const [planRes] = await db.promise().query("SELECT * FROM daily_plans WHERE user_id = ? AND plan_date = ?", [userId, today]);
-        const plan = planRes[0];
-        const [items] = await db.promise().query("SELECT * FROM daily_plan_items WHERE daily_plan_id = ? ORDER BY id ASC", [plan.id]);
+        const plan = planRes && planRes.length > 0 ? planRes[0] : null;
+        const [items] = plan ? await db.promise().query("SELECT * FROM daily_plan_items WHERE daily_plan_id = ? ORDER BY id ASC", [plan.id]) : [[]];
         
         res.json({
             success: true,
             plan: plan,
-            activities: items
+            activities: items || []
         });
     } catch (err) {
         console.error(err);
@@ -279,7 +290,8 @@ router.post("/generate", verifyToken, async (req, res) => {
 router.put("/items/:id/complete", verifyToken, async (req, res) => {
     try {
         const itemId = req.params.id;
-        const userId = req.user.id;
+        const userId = req.user.user_id || req.user.id;
+        if (!userId) return res.status(401).json({ success: false, message: "Unauthorized." });
         
         const [itemCheck] = await db.promise().query("SELECT daily_plan_id FROM daily_plan_items WHERE id = ? AND user_id = ?", [itemId, userId]);
         if (itemCheck.length === 0) return res.status(404).json({ success: false, message: "Activity not found." });
@@ -310,7 +322,8 @@ router.put("/items/:id/complete", verifyToken, async (req, res) => {
 router.put("/items/:id/uncomplete", verifyToken, async (req, res) => {
     try {
         const itemId = req.params.id;
-        const userId = req.user.id;
+        const userId = req.user.user_id || req.user.id;
+        if (!userId) return res.status(401).json({ success: false, message: "Unauthorized." });
         
         const [itemCheck] = await db.promise().query("SELECT daily_plan_id FROM daily_plan_items WHERE id = ? AND user_id = ?", [itemId, userId]);
         if (itemCheck.length === 0) return res.status(404).json({ success: false, message: "Activity not found." });
@@ -331,7 +344,8 @@ router.put("/items/:id/uncomplete", verifyToken, async (req, res) => {
 router.put("/items/:id/skip", verifyToken, async (req, res) => {
     try {
         const itemId = req.params.id;
-        const userId = req.user.id;
+        const userId = req.user.user_id || req.user.id;
+        if (!userId) return res.status(401).json({ success: false, message: "Unauthorized." });
         
         const [itemCheck] = await db.promise().query("SELECT daily_plan_id FROM daily_plan_items WHERE id = ? AND user_id = ?", [itemId, userId]);
         if (itemCheck.length === 0) return res.status(404).json({ success: false, message: "Activity not found." });
@@ -352,12 +366,13 @@ router.put("/items/:id/skip", verifyToken, async (req, res) => {
 // GET /api/daily-plan/history
 router.get("/history", verifyToken, async (req, res) => {
     try {
-        const userId = req.user.id;
+        const userId = req.user.user_id || req.user.id;
+        if (!userId) return res.status(401).json({ success: false, message: "Unauthorized." });
         const [history] = await db.promise().query(
             "SELECT * FROM daily_plans WHERE user_id = ? ORDER BY plan_date DESC LIMIT 30", 
             [userId]
         );
-        res.json({ success: true, history: history });
+        res.json({ success: true, history: history || [] });
     } catch (err) {
         console.error(err);
         res.status(500).json({ success: false, message: "Error retrieving daily plan history." });

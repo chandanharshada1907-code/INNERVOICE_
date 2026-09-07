@@ -56,6 +56,9 @@ router.post("/complete", verifyToken, (req, res) => {
                 console.error("Error completing session:", err);
                 return res.status(500).json({ success: false, message: "Failed to complete" });
             }
+            if (result.affectedRows === 0) {
+                return res.status(404).json({ success: false, message: "Focus session not found" });
+            }
             
             try {
                 await awardXP(userId, 10, "Focus session", "focus_session", session_id);

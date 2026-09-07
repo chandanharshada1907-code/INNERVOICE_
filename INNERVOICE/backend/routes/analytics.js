@@ -100,7 +100,7 @@ router.get("/", verifyToken, async (req, res) => {
         // 4. Habits Analytics
         let activeHabits = 0, completedHabits = 0, habitConsistency = 0;
         try {
-            const [habits] = await promiseDb.query(`SELECT * FROM habits WHERE user_id = ? AND is_active = 1`, [userId]);
+            const [habits] = await promiseDb.query(`SELECT * FROM habits WHERE user_id = ? AND active = 1`, [userId]);
             activeHabits = habits.length;
             const [completions] = await promiseDb.query(`SELECT * FROM habit_completions WHERE user_id = ? ${getFilter('completion_date')} AND completed = 1`, [userId]);
             completedHabits = completions.length;

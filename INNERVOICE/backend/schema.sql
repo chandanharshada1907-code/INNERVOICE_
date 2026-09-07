@@ -14,7 +14,21 @@ CREATE TABLE IF NOT EXISTS users (
     name       VARCHAR(100) NOT NULL,
     email      VARCHAR(150) NOT NULL UNIQUE,
     password   VARCHAR(255) NOT NULL,
+    role       VARCHAR(50)  DEFAULT 'user',
     streak     INT DEFAULT 0,
+    xp         INT DEFAULT 0,
+    level      INT DEFAULT 1,
+    phone_number VARCHAR(20) DEFAULT NULL UNIQUE,
+    email_verified BOOLEAN DEFAULT FALSE,
+    phone_verified BOOLEAN DEFAULT FALSE,
+    email_otp_hash VARCHAR(255) DEFAULT NULL,
+    email_otp_expires_at DATETIME DEFAULT NULL,
+    email_otp_attempts INT DEFAULT 0,
+    email_otp_sent_at DATETIME DEFAULT NULL,
+    phone_otp_hash VARCHAR(255) DEFAULT NULL,
+    phone_otp_expires_at DATETIME DEFAULT NULL,
+    phone_otp_attempts INT DEFAULT 0,
+    phone_otp_sent_at DATETIME DEFAULT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -217,3 +231,16 @@ CREATE TABLE IF NOT EXISTS ai_memory (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
+
+-- 6. Mental Wellness Assessments (PHQ-9 & GAD-7)
+CREATE TABLE IF NOT EXISTS mental_wellness_assessments (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    assessment_type VARCHAR(20) NOT NULL,
+    total_score INT NOT NULL,
+    severity VARCHAR(50) NOT NULL,
+    answers JSON NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+

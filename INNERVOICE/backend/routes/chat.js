@@ -82,7 +82,8 @@ router.post("/message", verifyToken, async (req, res) => {
 
         // 2. Generate AI Response
         const context = await wellnessAssistantService.buildWellnessContext(userId);
-        const aiResult = await wellnessAssistantService.generateAssistantResponse(context, safeUserContent);
+        const userLanguage = req.body.language || req.body.lang || (context && context.language) || 'en';
+        const aiResult = await wellnessAssistantService.generateAssistantResponse(context, safeUserContent, userLanguage);
 
         const aiResponseText = typeof aiResult === 'object' ? (aiResult.reply || "AI service is currently unavailable.") : String(aiResult);
         const isCrisis = typeof aiResult === 'object' ? !!aiResult.isCrisis : false;

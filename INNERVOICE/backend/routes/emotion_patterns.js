@@ -72,6 +72,15 @@ router.post("/", verifyToken, (req, res) => {
         return res.status(400).json({ success: false, message: "Mood ID is required" });
     }
 
+    db.query("SELECT mood_id FROM moods WHERE mood_id = ? AND user_id = ?", [mood_id, userId], (err, moodRows) => {
+        if (err) {
+            console.error("Error checking mood ownership:", err);
+            return res.status(500).json({ success: false, message: "Failed to validate mood" });
+        }
+        if (moodRows.length === 0) {
+            return res.status(404).json({ success: false, message: "Mood not found" });
+        }
+
     const insertMoodTrigger = (t_id) => {
         const sql = `
             INSERT INTO mood_triggers (mood_id, trigger_id, context_note)
@@ -104,6 +113,7 @@ router.post("/", verifyToken, (req, res) => {
     } else {
         return res.status(400).json({ success: false, message: "Trigger ID or custom trigger name required" });
     }
+    });
 });
 
 // ======================================

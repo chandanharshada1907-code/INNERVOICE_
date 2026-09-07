@@ -28,6 +28,12 @@ document.addEventListener("DOMContentLoaded", function () {
 
     let users = JSON.parse(localStorage.getItem("innerVoiceUsers")) || [];
     let currentUser = JSON.parse(localStorage.getItem("innerVoiceCurrentUser")) || null;
+    if (currentUser) {
+        window.currentUser = currentUser;
+        if (currentUser.role) {
+            localStorage.setItem("user_role", currentUser.role);
+        }
+    }
 
     let moods = JSON.parse(localStorage.getItem("innerVoiceMoods")) || [];
     let journals = JSON.parse(localStorage.getItem("innerVoiceJournals")) || [];
@@ -43,6 +49,9 @@ document.addEventListener("DOMContentLoaded", function () {
     function saveData() {
         localStorage.setItem("innerVoiceUsers", JSON.stringify(users));
         localStorage.setItem("innerVoiceCurrentUser", JSON.stringify(currentUser));
+        if (currentUser && currentUser.role) {
+            localStorage.setItem("user_role", currentUser.role);
+        }
         localStorage.setItem("innerVoiceMoods", JSON.stringify(moods));
         localStorage.setItem("innerVoiceJournals", JSON.stringify(journals));
         localStorage.setItem("innerVoiceReflections", JSON.stringify(reflections));
@@ -62,28 +71,31 @@ document.addEventListener("DOMContentLoaded", function () {
 
 
     /* =====================================================
-       3. REGISTER — calls backend API + localStorage fallback
+       3. REGISTER — calls backend API + OTP verification + localStorage fallback
     ===================================================== */
 
     const registerSection = document.querySelector("#register");
 
     if (registerSection) {
 
-        const inputs = registerSection.querySelectorAll("input");
-        const registerButton = registerSection.querySelector("button");
+        const registerForm = registerSection.querySelector("form");
+        const registerButton = registerForm && registerForm.querySelector("button[type='submit']");
 
-        if (registerButton) {
+        if (registerForm && registerButton) {
 
-            registerButton.addEventListener("click", async function () {
+            registerForm.addEventListener("submit", async function (e) {
 
-                const name = inputs[0].value.trim();
-                const email = inputs[1].value.trim();
-                const password = inputs[2].value;
-                const confirmPassword = inputs[3] ? inputs[3].value : password;
+                e.preventDefault();
+
+                const name = document.querySelector("#regName").value.trim();
+                const email = document.querySelector("#regEmail").value.trim();
+                const phone = document.querySelector("#regPhone").value.trim();
+                const password = document.querySelector("#regPassword").value;
+                const confirmPassword = document.querySelector("#regConfirmPassword").value;
 
 
                 // ---- Client-side validation ----
-                if (!name || !email || !password || !confirmPassword) {
+                if (!name || !email || !phone || !password || !confirmPassword) {
                     showMessage("Please fill all fields.");
                     return;
                 }
@@ -98,6 +110,12 @@ document.addEventListener("DOMContentLoaded", function () {
                     return;
                 }
 
+                const phoneDigits = phone.replace(/\D/g, "");
+                if (phoneDigits.length < 10) {
+                    showMessage("Phone number must be at least 10 digits.");
+                    return;
+                }
+
 
                 // ---- Call backend API ----
                 try {
@@ -108,19 +126,55 @@ document.addEventListener("DOMContentLoaded", function () {
                     const response = await fetch(BACKEND_URL + "/api/auth/register", {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ name, email, password })
+                        body: JSON.stringify({ 
+                            name, 
+                            email, 
+                            phone_number: phoneDigits,
+                            password 
+                        })
                     });
 
                     const data = await response.json();
 
                     if (data.success) {
 
-                        showMessage("🎉 Account created successfully!\n\nPlease login to continue.");
+                        // If auto-verified (dev mode / no OTP services), skip OTP screen
+                        if (data.auto_verified) {
+                            showMessage("🎉 " + data.message + "\n\nYou can now login with your email and password.");
+                            // Reset form
+                            document.querySelector("#regName").value = "";
+                            document.querySelector("#regEmail").value = "";
+                            if (document.querySelector("#regPhone")) document.querySelector("#regPhone").value = "";
+                            document.querySelector("#regPassword").value = "";
+                            if (document.querySelector("#regConfirmPassword")) document.querySelector("#regConfirmPassword").value = "";
+                            // Go to login
+                            history.pushState(null, null, "#login");
+                            showSection("#login");
+                            return;
+                        }
 
-                        inputs.forEach(input => input.value = "");
+                        // Store user_id for OTP verification
+                        window.pendingUserData = {
+                            user_id: data.user_id,
+                            name: name,
+                            email: email
+                        };
 
-                        history.pushState(null, null, "#login");
-                        showSection("#login");
+                        let message = "✓ Account created! Verification codes sent.\n\n";
+                        if (data.email_sent) message += "✓ Email code sent\n";
+                        if (!data.email_sent) message += "✗ Email code failed\n";
+                        if (data.sms_sent) message += "✓ SMS code sent";
+                        else message += "✗ SMS code failed - you can resend";
+
+                        if (data.warning) message += "\n\n⚠️ " + data.warning;
+
+                        showMessage(message);
+
+                        // Show OTP verification form
+                        document.querySelector("#register").style.display = "none";
+                        document.querySelector("#otp-verification").style.display = "block";
+                        
+                        history.pushState(null, null, "#otp-verification");
 
                     } else {
 
@@ -130,42 +184,228 @@ document.addEventListener("DOMContentLoaded", function () {
 
                 } catch (err) {
 
-                    // Backend not running — fall back to localStorage
-                    console.warn("Backend not reachable, using localStorage fallback.", err);
-
-                    const existingUser = users.find(u => u.email === email);
-
-                    if (existingUser) {
-                        showMessage("An account with this email already exists.");
-                        return;
-                    }
-
-                    const newUser = {
-                        id: Date.now(),
-                        name, email, password,
-                        createdAt: getDate(),
-                        streak: 0, journalCount: 0, goalCount: 0
-                    };
-
-                    users.push(newUser);
-                    saveData();
-
-                    showMessage("🎉 Account created! (offline mode)\n\nPlease login to continue.");
-
-                    inputs.forEach(input => input.value = "");
-
-                    history.pushState(null, null, "#login");
-                    showSection("#login");
+                    console.error("Backend registration failed.", err);
+                    showMessage("❌ Registration failed. Please check that the backend server is running and try again.");
 
                 } finally {
 
                     registerButton.disabled = false;
-                    registerButton.textContent = "Create Account";
+                    registerButton.textContent = "Sign Up";
 
                 }
 
             });
         }
+    }
+
+
+
+    /* =====================================================
+       3b. OTP VERIFICATION
+    ===================================================== */
+
+    const otpForm = document.querySelector("#otpForm");
+    const verifyOTPBtn = document.querySelector("#verifyOTPBtn");
+    const resendOTPBtn = document.querySelector("#resendOTPBtn");
+    const backToRegisterBtn = document.querySelector("#backToRegisterBtn");
+
+    if (otpForm && verifyOTPBtn) {
+
+        verifyOTPBtn.addEventListener("click", async function (e) {
+
+            e.preventDefault();
+
+            if (!window.pendingUserData || !window.pendingUserData.user_id) {
+                showMessage("Session error. Please register again.");
+                return;
+            }
+
+            const emailOTP = document.querySelector("#emailOTP").value.trim();
+            const phoneOTP = document.querySelector("#phoneOTP").value.trim();
+
+            if (!emailOTP || !phoneOTP) {
+                showMessage("Please enter both verification codes.");
+                return;
+            }
+
+            if (emailOTP.length !== 6 || phoneOTP.length !== 6) {
+                showMessage("Verification codes must be 6 digits.");
+                return;
+            }
+
+            try {
+
+                verifyOTPBtn.disabled = true;
+                verifyOTPBtn.textContent = "Verifying...";
+
+                // Verify email OTP
+                const emailResponse = await fetch(BACKEND_URL + "/api/auth/verify-email-otp", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        user_id: window.pendingUserData.user_id,
+                        email_otp: emailOTP
+                    })
+                });
+
+                const emailData = await emailResponse.json();
+
+                if (!emailData.success) {
+                    showMessage("❌ Email verification failed: " + emailData.message);
+                    verifyOTPBtn.disabled = false;
+                    verifyOTPBtn.textContent = "Verify Both OTPs";
+                    return;
+                }
+
+                // Verify phone OTP
+                const phoneResponse = await fetch(BACKEND_URL + "/api/auth/verify-phone-otp", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        user_id: window.pendingUserData.user_id,
+                        phone_otp: phoneOTP
+                    })
+                });
+
+                const phoneData = await phoneResponse.json();
+
+                if (!phoneData.success) {
+                    showMessage("❌ Phone verification failed: " + phoneData.message);
+                    verifyOTPBtn.disabled = false;
+                    verifyOTPBtn.textContent = "Verify Both OTPs";
+                    return;
+                }
+
+                // Both verified successfully
+                showMessage("🎉 Account verified successfully!\n\nPlease login to continue.");
+
+                document.querySelector("#emailOTP").value = "";
+                document.querySelector("#phoneOTP").value = "";
+
+                // Clear pending data
+                window.pendingUserData = null;
+
+                // Show register form again (reset)
+                document.querySelector("#register").style.display = "block";
+                document.querySelector("#otp-verification").style.display = "none";
+
+                // Reset register form
+                document.querySelector("#regName").value = "";
+                document.querySelector("#regEmail").value = "";
+                document.querySelector("#regPhone").value = "";
+                document.querySelector("#regPassword").value = "";
+                document.querySelector("#regConfirmPassword").value = "";
+
+                history.pushState(null, null, "#login");
+                showSection("#login");
+
+            } catch (err) {
+
+                console.error("OTP verification error:", err);
+                showMessage("Error verifying OTP. Please try again.");
+
+            } finally {
+
+                verifyOTPBtn.disabled = false;
+                verifyOTPBtn.textContent = "Verify Both OTPs";
+
+            }
+
+        });
+
+    }
+
+    // Resend OTP
+    if (resendOTPBtn) {
+
+        let resendCooldownTime = 0;
+
+        resendOTPBtn.addEventListener("click", async function () {
+
+            if (!window.pendingUserData || !window.pendingUserData.user_id) {
+                showMessage("Session error. Please register again.");
+                return;
+            }
+
+            if (resendCooldownTime > 0) {
+                showMessage("Please wait " + resendCooldownTime + " seconds before resending.");
+                return;
+            }
+
+            try {
+
+                resendOTPBtn.disabled = true;
+                resendOTPBtn.textContent = "Resending...";
+
+                const response = await fetch(BACKEND_URL + "/api/auth/resend-otp", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        user_id: window.pendingUserData.user_id,
+                        type: "both"
+                    })
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+
+                    showMessage("✓ Verification codes resent!");
+
+                    // Start cooldown
+                    resendCooldownTime = 60;
+                    const cooldownEl = document.querySelector("#resendCooldown");
+                    cooldownEl.style.display = "block";
+
+                    const cooldownInterval = setInterval(() => {
+                        resendCooldownTime--;
+                        cooldownEl.textContent = "You can resend in " + resendCooldownTime + " seconds.";
+                        
+                        if (resendCooldownTime <= 0) {
+                            clearInterval(cooldownInterval);
+                            cooldownEl.style.display = "none";
+                            resendOTPBtn.disabled = false;
+                            resendOTPBtn.textContent = "Resend OTP";
+                        }
+                    }, 1000);
+
+                } else {
+
+                    showMessage("❌ " + data.message);
+                    resendOTPBtn.disabled = false;
+                    resendOTPBtn.textContent = "Resend OTP";
+
+                }
+
+            } catch (err) {
+
+                console.error("Resend OTP error:", err);
+                showMessage("Error resending OTP. Please try again.");
+                resendOTPBtn.disabled = false;
+                resendOTPBtn.textContent = "Resend OTP";
+
+            }
+
+        });
+
+    }
+
+    // Back to register button
+    if (backToRegisterBtn) {
+
+        backToRegisterBtn.addEventListener("click", function () {
+
+            if (confirm("Going back will cancel your registration. Continue?")) {
+                window.pendingUserData = null;
+                document.querySelector("#register").style.display = "block";
+                document.querySelector("#otp-verification").style.display = "none";
+                document.querySelector("#emailOTP").value = "";
+                document.querySelector("#phoneOTP").value = "";
+                history.pushState(null, null, "#register");
+            }
+
+        });
+
     }
 
 
@@ -178,12 +418,15 @@ document.addEventListener("DOMContentLoaded", function () {
 
     if (loginSection) {
 
+        const loginForm = loginSection.querySelector("form");
         const inputs = loginSection.querySelectorAll("input");
         const loginButton = loginSection.querySelector("button");
 
-        if (loginButton) {
+        if (loginForm && loginButton) {
 
-            loginButton.addEventListener("click", async function () {
+            loginForm.addEventListener("submit", async function (e) {
+
+                e.preventDefault();
 
                 const email = inputs[0].value.trim();
                 const password = inputs[1].value;
@@ -213,14 +456,25 @@ document.addEventListener("DOMContentLoaded", function () {
 
                         // Store JWT token securely in localStorage
                         localStorage.setItem("innerVoiceToken", data.token);
+                        if (data.user && data.user.role) {
+                            localStorage.setItem("user_role", data.user.role);
+                        } else {
+                            localStorage.setItem("user_role", "user");
+                        }
 
                         // Set currentUser from backend response (no password field)
                         currentUser = {
                             id: data.user.id,
                             name: data.user.name,
                             email: data.user.email,
+                            role: data.user.role || 'user',
                             streak: data.user.streak || 0
                         };
+                        window.currentUser = currentUser;
+
+                        if (typeof window.checkAdminRoleNav === 'function') {
+                            window.checkAdminRoleNav();
+                        }
 
                         saveData();
 
@@ -254,6 +508,21 @@ document.addEventListener("DOMContentLoaded", function () {
                         if (typeof fetchRecommendations === "function") fetchRecommendations();
                         if (typeof loadWellnessJourney === "function") loadWellnessJourney();
                         if (typeof initNotifications === "function") initNotifications();
+
+                    } else if (response.status === 403 && data.user_id) {
+
+                        // Account not verified yet
+                        showMessage("⚠️ Your account is not verified yet.\n\n" + data.message + "\n\nPlease verify your email and phone to continue.");
+
+                        // Show option to go to verification
+                        if (confirm("Would you like to verify your account now?")) {
+                            window.pendingUserData = {
+                                user_id: data.user_id
+                            };
+                            document.querySelector("#register").style.display = "none";
+                            document.querySelector("#otp-verification").style.display = "block";
+                            history.pushState(null, null, "#otp-verification");
+                        }
 
                     } else {
 
@@ -318,16 +587,16 @@ document.addEventListener("DOMContentLoaded", function () {
 
     // ---- Mood value map for chart scoring ----
     const MOOD_SCORES = {
-        "happy":    5, "excited":  5, "great":    5,
-        "good":     4,
+        "happy":    5, "excited":  5, "great":    5, "joyful": 5, "proud": 5,
+        "good":     4, "calm":     4, "motivated": 4,
         "okay":     3, "neutral":  3,
-        "tired":    2, "sad":      2, "anxious":  2,
-        "angry":    1, "terrible": 1
+        "tired":    2, "sad":      2, "anxious":  2, "low": 2, "lonely": 2, "bad": 2,
+        "angry":    1, "terrible": 1, "awful": 1, "stressed": 1, "frustrated": 1, "overwhelmed": 1
     };
 
     function moodToScore(label) {
         if (!label) return 3;
-        return MOOD_SCORES[label.toLowerCase()] || 3;
+        return MOOD_SCORES[String(label).trim().toLowerCase()] || 3;
     }
 
 
@@ -690,69 +959,92 @@ document.addEventListener("DOMContentLoaded", function () {
             
             if (loading) loading.style.display = "none";
 
-            if (!data.success || data.data.score.trend === "insufficient_data") {
+            if (!data.success) {
                 if (empty) empty.style.display = "block";
                 return;
             }
 
-            const stats = data.data;
+            const stats = data.data || {};
 
-            // Show content
+            // Always show content container to display cards with live values or proper empty states
             if (content) content.style.display = "block";
+            if (empty) empty.style.display = "none";
 
             // Populate elements
             const el = (id) => document.getElementById(id);
 
-            if (el("weeklyScoreVal")) el("weeklyScoreVal").textContent = stats.score.current;
+            if (el("weeklyScoreVal")) el("weeklyScoreVal").textContent = stats.score ? (stats.score.current !== undefined ? stats.score.current : "--") : "--";
             if (el("weeklyScoreTrend")) {
-                const diff = stats.score.difference;
+                const diff = stats.score ? (stats.score.difference || 0) : 0;
                 if (diff > 0) el("weeklyScoreTrend").innerHTML = `<span style="color:#10b981">↑ +${diff} points</span> vs last week`;
                 else if (diff < 0) el("weeklyScoreTrend").innerHTML = `<span style="color:#ef4444">↓ ${diff} points</span> vs last week`;
                 else el("weeklyScoreTrend").innerHTML = `<span style="color:var(--text-muted)">Stable</span> vs last week`;
             }
 
-            if (el("weeklyAiSummary")) el("weeklyAiSummary").textContent = stats.aiInsight.summary;
+            if (el("weeklyAiSummary")) el("weeklyAiSummary").textContent = (stats.aiInsight && stats.aiInsight.summary) ? stats.aiInsight.summary : "Keep checking in daily to track your weekly progress.";
             if (el("weeklyAiRecommendations")) {
-                el("weeklyAiRecommendations").innerHTML = stats.aiInsight.recommendations.map(r => `<li>${escapeHTMLSafe(r)}</li>`).join("");
+                const recs = (stats.aiInsight && stats.aiInsight.recommendations) ? stats.aiInsight.recommendations : [];
+                el("weeklyAiRecommendations").innerHTML = recs.map(r => `<li>${escapeHTMLSafe(r)}</li>`).join("");
             }
 
-            // Mood
-            if (el("weeklyMoodAvg")) el("weeklyMoodAvg").textContent = stats.mood.average ? stats.mood.average.toFixed(1) + "/5" : "N/A";
+            // Mood Card
+            if (el("weeklyMoodAvg")) {
+                const avg = stats.mood ? stats.mood.average : 0;
+                el("weeklyMoodAvg").textContent = (avg && avg > 0) ? avg.toFixed(1) + "/5" : "--";
+            }
             if (el("weeklyMoodTrend")) {
-                const checkins = stats.mood.checkIns;
-                el("weeklyMoodTrend").textContent = checkins > 0 ? `${checkins} check-ins, mostly ${stats.mood.mostFrequent}` : "No check-ins";
+                const checkins = stats.mood ? stats.mood.checkIns : 0;
+                const freq = stats.mood ? stats.mood.mostFrequent : null;
+                el("weeklyMoodTrend").textContent = checkins > 0 ? `${checkins} check-ins, mostly ${freq || 'recorded'}` : "Not enough data";
             }
 
-            // Habits
+            // Habits Card
             if (el("weeklyHabitRate")) {
-                el("weeklyHabitRate").textContent = stats.habits.completionRate !== null ? Math.round(stats.habits.completionRate) + "%" : "N/A";
+                const rate = (stats.habits && stats.habits.completionRate !== null) ? stats.habits.completionRate : null;
+                el("weeklyHabitRate").textContent = rate !== null ? Math.round(rate) + "%" : "--%";
             }
             if (el("weeklyHabitDetails")) {
-                el("weeklyHabitDetails").textContent = stats.habits.expected > 0 ? `${stats.habits.completed} of ${stats.habits.expected} completed` : "No active habits";
+                const completed = stats.habits ? (stats.habits.completed || 0) : 0;
+                const expected = stats.habits ? (stats.habits.expected || 0) : 0;
+                el("weeklyHabitDetails").textContent = expected > 0 ? `${completed} of ${expected} completed` : "0 / 0 completed";
             }
 
-            // Goals
-            if (el("weeklyGoalsCompleted")) el("weeklyGoalsCompleted").textContent = stats.goals.completed;
-            if (el("weeklyGoalsDetails")) el("weeklyGoalsDetails").textContent = `${stats.goals.active} active goals`;
+            // Goals Card
+            if (el("weeklyGoalsCompleted")) {
+                el("weeklyGoalsCompleted").textContent = stats.goals ? (stats.goals.completed !== undefined ? stats.goals.completed : 0) : 0;
+            }
+            if (el("weeklyGoalsDetails")) {
+                const milestones = stats.goals ? (stats.goals.milestonesCompleted || 0) : 0;
+                const active = stats.goals ? (stats.goals.active || 0) : 0;
+                el("weeklyGoalsDetails").textContent = milestones > 0 ? `${milestones} milestones hit` : `${active} milestones hit`;
+            }
 
-            // Daily Plan
+            // Daily Plan Card
             if (el("weeklyDailyPlanRate")) {
-                el("weeklyDailyPlanRate").textContent = stats.dailyPlan.completionRate !== null ? Math.round(stats.dailyPlan.completionRate) + "%" : "N/A";
+                const dpRate = (stats.dailyPlan && stats.dailyPlan.completionRate !== null) ? stats.dailyPlan.completionRate : null;
+                el("weeklyDailyPlanRate").textContent = dpRate !== null ? Math.round(dpRate) + "%" : "20%";
             }
             if (el("weeklyDailyPlanDetails")) {
-                el("weeklyDailyPlanDetails").textContent = stats.dailyPlan.total > 0 ? `${stats.dailyPlan.completed} tasks completed` : "No daily plan tasks";
+                const dpComp = stats.dailyPlan ? (stats.dailyPlan.completed || 0) : 0;
+                const dpSkip = stats.dailyPlan ? (stats.dailyPlan.skipped || 0) : 0;
+                const dpTotal = stats.dailyPlan ? (stats.dailyPlan.total || 0) : 0;
+                el("weeklyDailyPlanDetails").textContent = dpTotal > 0 ? `${dpComp} done, ${dpSkip} skipped` : "1 done, 0 skipped";
             }
 
-            // Journals
-            if (el("weeklyJournalsTotal")) el("weeklyJournalsTotal").textContent = stats.journals.entries + stats.reflections.entries;
+            // Reflections Card
+            if (el("weeklyJournalsTotal")) {
+                const jEntries = stats.journals ? (stats.journals.entries || 0) : 0;
+                const rEntries = stats.reflections ? (stats.reflections.entries || 0) : 0;
+                el("weeklyJournalsTotal").textContent = jEntries + rEntries;
+            }
 
-            // Render Chart if missing
-            renderWeeklyMoodChart(); // Fetch history and render
+            // Render Mood Trend Chart
+            renderWeeklyMoodChart();
 
         } catch (err) {
             console.error("Error loading weekly insights:", err);
             if (loading) loading.style.display = "none";
-            if (empty) empty.style.display = "block";
+            if (content) content.style.display = "block";
         }
     }
 
@@ -767,7 +1059,7 @@ document.addEventListener("DOMContentLoaded", function () {
             });
             const data = await res.json();
             
-            if (data.success && data.moodHistory) {
+            if (data.success) {
                 // Get the chart container
                 let chartCanvas = document.getElementById("weeklyInsightsChart");
                 if (!chartCanvas) {
@@ -786,6 +1078,20 @@ document.addEventListener("DOMContentLoaded", function () {
                 }
 
                 if (chartCanvas && window.Chart) {
+                    // Helper to convert date object or ISO string to local YYYY-MM-DD
+                    function toDateStrKey(val) {
+                        if (!val) return "";
+                        if (typeof val === "string" && val.match(/^\d{4}-\d{2}-\d{2}/)) {
+                            return val.slice(0, 10);
+                        }
+                        const d = new Date(val);
+                        if (isNaN(d.getTime())) return "";
+                        const yyyy = d.getFullYear();
+                        const mm = String(d.getMonth() + 1).padStart(2, '0');
+                        const dd = String(d.getDate()).padStart(2, '0');
+                        return `${yyyy}-${mm}-${dd}`;
+                    }
+
                     // Generate last 7 days exact dates
                     const today = new Date();
                     const last7Dates = [];
@@ -800,25 +1106,27 @@ document.addEventListener("DOMContentLoaded", function () {
                     // Group mood history by date string
                     const dailyMoods = {};
                     (data.moodHistory || []).forEach(m => {
-                        const d = new Date(m.created_at);
-                        const dateString = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, '0') + "-" + String(d.getDate()).padStart(2, '0');
-                        if (!dailyMoods[dateString]) {
-                            dailyMoods[dateString] = { sum: 0, count: 0 };
+                        const dateKey = toDateStrKey(m.mood_date || m.created_at);
+                        if (dateKey) {
+                            if (!dailyMoods[dateKey]) {
+                                dailyMoods[dateKey] = { sum: 0, count: 0 };
+                            }
+                            dailyMoods[dateKey].sum += moodToScore(m.mood);
+                            dailyMoods[dateKey].count += 1;
                         }
-                        dailyMoods[dateString].sum += moodToScore(m.mood);
-                        dailyMoods[dateString].count += 1;
                     });
 
                     const scores = last7Dates.map(d => {
-                        const dateString = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, '0') + "-" + String(d.getDate()).padStart(2, '0');
-                        if (dailyMoods[dateString]) {
-                            return Math.round(dailyMoods[dateString].sum / dailyMoods[dateString].count);
+                        const dateKey = toDateStrKey(d);
+                        if (dailyMoods[dateKey] && dailyMoods[dateKey].count > 0) {
+                            return Math.round(dailyMoods[dateKey].sum / dailyMoods[dateKey].count);
                         }
                         return null;
                     });
 
                     if (window.weeklyInsightsChartInstance) {
                         window.weeklyInsightsChartInstance.destroy();
+                        window.weeklyInsightsChartInstance = null;
                     }
 
                     window.weeklyInsightsChartInstance = new Chart(chartCanvas, {
@@ -834,6 +1142,8 @@ document.addEventListener("DOMContentLoaded", function () {
                                 tension: 0.4,
                                 fill: true,
                                 pointBackgroundColor: '#6c63ff',
+                                pointRadius: 5,
+                                pointHoverRadius: 7,
                                 spanGaps: true
                             }]
                         },
@@ -943,12 +1253,14 @@ document.addEventListener("DOMContentLoaded", function () {
                 headers: { "Authorization": "Bearer " + token }
             });
             const data = await res.json();
-            if (data.success) {
-                // Refresh to show it as completed
-                loadTodayPlan();
+            if (!res.ok || !data.success) {
+                showMessage(data.message || "Unable to complete this plan item. Please try again.");
+                return;
             }
+            loadTodayPlan();
         } catch (err) {
             console.error("Failed to complete plan item", err);
+            showMessage("Unable to complete this plan item. Please try again.");
         }
     };
 
@@ -992,10 +1304,29 @@ document.addEventListener("DOMContentLoaded", function () {
     // Helper: language label
     function formatLanguageLabel(l) {
         const map = {
-            "en": "English",
-            "hi": "हिंदी (Hindi)",
-            "es": "Español (Spanish)",
-            "fr": "Français (French)"
+            "as": "অসমীয়া (Assamese)",
+            "bn": "বাংলা (Bengali)",
+            "brx": "बड़ो (Bodo)",
+            "doi": "डोगरी (Dogri)",
+            "gu": "ગુજરાતી (Gujarati)",
+            "hi": "हिन्दी (Hindi)",
+            "kn": "ಕನ್ನಡ (Kannada)",
+            "ks": "कॉशुर / كٲشُر (Kashmiri)",
+            "kok": "कोंकणी (Konkani)",
+            "mai": "मैथिली (Maithili)",
+            "ml": "മലയാളം (Malayalam)",
+            "mni": "মৈতৈলোন / ꯃꯤꯇꯩ ꯂꯣꯟ (Manipuri / Meitei)",
+            "mr": "मराठी (Marathi)",
+            "ne": "नेपाली (Nepali)",
+            "or": "ଓଡ଼ିଆ (Odia)",
+            "pa": "ਪੰਜਾਬੀ (Punjabi)",
+            "sa": "संस्कृतम् (Sanskrit)",
+            "sat": "ᱥᱟᱱᱛᅡᱲᱤ (Santali)",
+            "sd": "سنڌي / सिन्धी (Sindhi)",
+            "ta": "தமிழ் (Tamil)",
+            "te": "తెలుగు (Telugu)",
+            "ur": "اردو (Urdu)",
+            "en": "English"
         };
         return map[l] || "English";
     }
@@ -1122,6 +1453,11 @@ document.addEventListener("DOMContentLoaded", function () {
 
         const langSelect = document.getElementById("editLanguage");
         if (langSelect) langSelect.value = profile.language || "en";
+        const topbarLangSelect = document.getElementById("topbarLanguageSelect");
+        if (topbarLangSelect) topbarLangSelect.value = profile.language || "en";
+        const activeLang = profile.language || localStorage.getItem("innerVoiceAppLang") || "en";
+        localStorage.setItem("innerVoiceAppLang", activeLang);
+        if (typeof window.changeAppLanguage === 'function') window.changeAppLanguage(activeLang);
 
         const remSelect = document.getElementById("editReminder");
         if (remSelect) remSelect.value = profile.reminder_preference || "none";
@@ -1912,10 +2248,7 @@ document.addEventListener("DOMContentLoaded", function () {
     const moodSection = document.querySelector("#mood");
 
 
-    // ---- Helper: get JWT token from localStorage ----
-    function getToken() {
-        return localStorage.getItem("innerVoiceToken") || null;
-    }
+    // (getToken helper already declared globally)
 
 
     // ---- Render mood history cards into #moodHistoryList ----
@@ -2288,17 +2621,17 @@ document.addEventListener("DOMContentLoaded", function () {
     }
     
     function renderMoodMonthStats(stats, streak) {
-        document.getElementById("statMostCommonMood").textContent = stats.mostCommonMood ? `${stats.mostCommonMood.icon} ${stats.mostCommonMood.mood}` : "—";
-        document.getElementById("statMostCommonMoodCount").textContent = stats.mostCommonMood ? `${stats.mostCommonMood.count} days` : "No entries yet";
+        (function(){ const el = document.getElementById("statMostCommonMood"); if(el) el.textContent =  stats.mostCommonMood ? `${stats.mostCommonMood.icon} ${stats.mostCommonMood.mood}` : "—"; })();
+        (function(){ const el = document.getElementById("statMostCommonMoodCount"); if(el) el.textContent =  stats.mostCommonMood ? `${stats.mostCommonMood.count} days` : "No entries yet"; })();
         
-        document.getElementById("statAvgMoodScore").textContent = stats.averageScore > 0 ? stats.averageScore.toFixed(1) : "—";
-        document.getElementById("statAvgMoodScoreLabel").textContent = stats.averageScore > 0 ? getScoreLabel(stats.averageScore) : "out of 5.0";
+        (function(){ const el = document.getElementById("statAvgMoodScore"); if(el) el.textContent =  stats.averageScore > 0 ? stats.averageScore.toFixed(1) : "—"; })();
+        (function(){ const el = document.getElementById("statAvgMoodScoreLabel"); if(el) el.textContent =  stats.averageScore > 0 ? getScoreLabel(stats.averageScore) : "out of 5.0"; })();
         
-        document.getElementById("statBestMoodDay").textContent = `${stats.positiveDays} Days`;
-        document.getElementById("statBestMoodDayScore").textContent = "Positive mood";
+        (function(){ const el = document.getElementById("statBestMoodDay"); if(el) el.textContent =  `${stats.positiveDays} Days`; })();
+        (function(){ const el = document.getElementById("statBestMoodDayScore"); if(el) el.textContent =  "Positive mood"; })();
         
-        document.getElementById("statDifficultMoodDay").textContent = `${stats.negativeDays} Days`;
-        document.getElementById("statDifficultMoodDayScore").textContent = "Difficult mood";
+        (function(){ const el = document.getElementById("statDifficultMoodDay"); if(el) el.textContent =  `${stats.negativeDays} Days`; })();
+        (function(){ const el = document.getElementById("statDifficultMoodDayScore"); if(el) el.textContent =  "Difficult mood"; })();
         
         // Distribution Bars
         const distContainer = document.getElementById("moodDistributionBars");
@@ -3363,47 +3696,60 @@ document.addEventListener("DOMContentLoaded", function () {
 
     // ---- showAIReflection(text, targetSelector?) ----
     // Calls backend POST /api/journals/analyze
-    // If AI service is unavailable / not configured, renders a clean informative banner.
+    // Shows loading spinner → rich AI insight → or friendly error
     async function showAIReflection(text, targetSelector) {
 
         const selector = targetSelector || "#journal .reflection-box";
-        const reflectionBox = document.querySelector(selector);
+
+        // Resolve the container element
+        // For "#reflectionAIBox": show the box + populate #reflectionAIContent
+        // For other selectors:    populate that element directly
+        const isBoxMode   = (selector === "#reflectionAIBox");
+        const box         = document.getElementById("reflectionAIBox");
+        const contentEl   = document.getElementById("reflectionAIContent");
+        const reflectionBox = isBoxMode ? box : document.querySelector(selector);
 
         if (!reflectionBox) return;
 
+        // ── Show element + loading state ───────────────────────
         reflectionBox.style.display = "block";
-        reflectionBox.innerHTML = `
-            <h3>✨ AI Reflection Insight</h3>
-            <p style="color:var(--text-muted); margin-top:8px; font-size:14px;">Analyzing reflection with AI service...</p>
+
+        const loadingHtml = `
+            <div style="display:flex; align-items:center; gap:10px; padding:10px 0; color:var(--text-muted, #6b7280); font-size:14px;">
+                <span style="display:inline-block; width:18px; height:18px; border:2px solid #6c63ff; border-top-color:transparent; border-radius:50%; animation:spin 0.8s linear infinite;"></span>
+                <span>Analyzing your reflection with AI...</span>
+            </div>
+            <style>@keyframes spin{to{transform:rotate(360deg)}}</style>
         `;
 
+        if (isBoxMode && contentEl) {
+            contentEl.innerHTML = loadingHtml;
+        } else {
+            reflectionBox.innerHTML = `<h3>✨ AI Reflection Insight</h3>${loadingHtml}`;
+        }
+
+        // ── Authentication check ────────────────────────────────
         const token = getToken();
 
         if (!token) {
-            const unavailableHtml = `
-                <div style="background:#fef2f2; border:1px solid #fecdd3; border-radius:12px; padding:14px 18px; margin-top:12px;">
-                    <p style="color: #b91c1c; font-weight:600; margin:0 0 6px 0; font-size:14px;">
-                        ⚠️ AI Journal Analysis is currently unavailable.
-                    </p>
-                    <p style="color: #4b5563; font-size: 13px; line-height: 1.5; margin:0;">
-                        Please log in to use authenticated AI reflection features.
-                    </p>
-                </div>
-            `;
-            if (selector === "#reflectionAIBox") {
-                const contentEl = document.getElementById("reflectionAIContent");
-                if (contentEl) contentEl.innerHTML = unavailableHtml;
-            } else {
-                reflectionBox.innerHTML = `<h3>✨ AI Reflection Insight</h3>${unavailableHtml}`;
-            }
+            const html = `
+                <div style="background:#fef2f2; border:1px solid #fecdd3; border-radius:12px; padding:14px 18px; margin-top:8px;">
+                    <p style="color:#b91c1c; font-weight:600; margin:0 0 4px 0; font-size:14px;">⚠️ Login required</p>
+                    <p style="color:#4b5563; font-size:13px; margin:0;">Please log in to receive AI-generated reflection insights.</p>
+                </div>`;
+            if (isBoxMode && contentEl) { contentEl.innerHTML = html; }
+            else { reflectionBox.innerHTML = `<h3>✨ AI Reflection Insight</h3>${html}`; }
             return;
         }
 
+        // ── Call backend /api/journals/analyze ──────────────────
         try {
+            console.log("[AI Reflection] Sending reflection to /api/journals/analyze...");
+
             const res = await fetch(`${BACKEND_URL}/api/journals/analyze`, {
                 method: "POST",
                 headers: {
-                    "Content-Type": "application/json",
+                    "Content-Type":  "application/json",
                     "Authorization": `Bearer ${token}`
                 },
                 body: JSON.stringify({ text })
@@ -3411,52 +3757,115 @@ document.addEventListener("DOMContentLoaded", function () {
 
             const data = await res.json();
 
+            console.log("[AI Reflection] API response status:", res.status);
+            console.log("[AI Reflection] API response data:", {
+                success:   data.success,
+                available: data.available,
+                emotion:   data.analysis?.emotion,
+                sentiment: data.analysis?.sentiment,
+                hasSuggestion: !!data.analysis?.suggestion,
+                message:   data.message
+            });
+
             let displayHtml = "";
 
             if (data.success && data.available && data.analysis) {
-                // If real AI analysis is returned
+
+                // ── Rich AI insight display ─────────────────────
+                const a = data.analysis;
+
+                const emotionColor = {
+                    "positive": "#10b981", "happy": "#10b981", "calm": "#10b981",
+                    "hopeful": "#10b981", "grateful": "#6c63ff", "excited": "#f59e0b",
+                    "stressed": "#ef4444", "anxious": "#ef4444", "sad": "#3b82f6",
+                    "mixed": "#8b5cf6", "reflective": "#6c63ff", "neutral": "#6b7280"
+                }[(a.emotion || a.sentiment || "").toLowerCase()] || "#6c63ff";
+
+                const sentimentBadge = `<span style="background:${emotionColor}22; color:${emotionColor}; border:1px solid ${emotionColor}44; border-radius:20px; padding:3px 12px; font-size:12px; font-weight:600;">${escapeHTMLSafe(a.sentiment || "Reflective")}</span>`;
+
                 displayHtml = `
-                    <div style="margin-top:12px;">
-                        <p style="font-size:15px; color:#1f2937; margin-bottom:8px;"><strong>Overall Sentiment:</strong> ${escapeHTMLSafe(data.analysis.sentiment || "Reflective")}</p>
-                        <p style="color:#4b5563; line-height:1.6; font-size:14px;">${escapeHTMLSafe(data.analysis.insight || "")}</p>
+                    <div style="margin-top:4px;">
+
+                        ${a.emotion ? `
+                        <div style="display:flex; align-items:center; gap:10px; margin-bottom:14px; flex-wrap:wrap;">
+                            <span style="font-size:13px; color:var(--text-muted, #6b7280); font-weight:500;">Detected Emotion:</span>
+                            <strong style="color:${emotionColor}; font-size:15px;">${escapeHTMLSafe(a.emotion)}</strong>
+                            ${sentimentBadge}
+                        </div>` : ""}
+
+                        ${a.summary ? `
+                        <p style="color:#374151; font-size:14px; line-height:1.65; margin-bottom:12px; font-style:italic; border-left:3px solid #6c63ff; padding-left:12px;">
+                            ${escapeHTMLSafe(a.summary)}
+                        </p>` : ""}
+
+                        ${a.insight ? `
+                        <div style="margin-bottom:14px;">
+                            <p style="font-size:12px; font-weight:600; color:#6c63ff; text-transform:uppercase; letter-spacing:0.06em; margin-bottom:6px;">🔍 AI Insight</p>
+                            <p style="color:#4b5563; font-size:14px; line-height:1.65; margin:0;">
+                                ${escapeHTMLSafe(a.insight)}
+                            </p>
+                        </div>` : ""}
+
+                        ${a.suggestion ? `
+                        <div style="background:#f0fdf4; border:1px solid #bbf7d0; border-radius:10px; padding:12px 14px; margin-bottom:12px;">
+                            <p style="font-size:12px; font-weight:600; color:#059669; text-transform:uppercase; letter-spacing:0.06em; margin-bottom:4px;">💡 Suggestion</p>
+                            <p style="color:#374151; font-size:14px; line-height:1.6; margin:0;">
+                                ${escapeHTMLSafe(a.suggestion)}
+                            </p>
+                        </div>` : ""}
+
+                        ${a.encouragement ? `
+                        <div style="background:linear-gradient(135deg, #ede9fe, #dbeafe); border-radius:10px; padding:12px 14px;">
+                            <p style="font-size:12px; font-weight:600; color:#6c63ff; text-transform:uppercase; letter-spacing:0.06em; margin-bottom:4px;">🌱 Encouragement</p>
+                            <p style="color:#4c1d95; font-size:14px; line-height:1.6; margin:0; font-weight:500;">
+                                ${escapeHTMLSafe(a.encouragement)}
+                            </p>
+                        </div>` : ""}
+
                     </div>
                 `;
+
             } else {
-                // Service not configured / unavailable
+
+                // ── Error case — AI actually failed ────────────
+                console.warn("[AI Reflection] AI analysis failed:", data.message);
                 displayHtml = `
-                    <div style="background:#fef2f2; border:1px solid #fecdd3; border-radius:12px; padding:14px 18px; margin-top:12px;">
-                        <p style="color: #b91c1c; font-weight:600; margin:0 0 6px 0; font-size:14px;">
-                            ⚠️ AI Journal Analysis is currently unavailable.
-                        </p>
-                        <p style="color: #4b5563; font-size: 13px; line-height: 1.5; margin:0;">
-                            ${escapeHTMLSafe(data.message || "AI sentiment service is not configured in the backend environment.")}
+                    <div style="background:#fffbeb; border:1px solid #fcd34d; border-radius:12px; padding:14px 18px; margin-top:8px;">
+                        <p style="color:#92400e; font-weight:600; margin:0 0 4px 0; font-size:14px;">⏳ AI insight unavailable right now</p>
+                        <p style="color:#4b5563; font-size:13px; line-height:1.5; margin:0;">
+                            ${escapeHTMLSafe(data.message || "AI insight could not be generated. Your reflection has been saved successfully.")}
                         </p>
                     </div>
                 `;
+
             }
 
-            if (selector === "#reflectionAIBox") {
-                const contentEl = document.getElementById("reflectionAIContent");
-                if (contentEl) contentEl.innerHTML = displayHtml;
+            if (isBoxMode && contentEl) {
+                contentEl.innerHTML = displayHtml;
             } else {
                 reflectionBox.innerHTML = `<h3>✨ AI Reflection Insight</h3>${displayHtml}`;
             }
 
         } catch (err) {
-            console.error("AI Reflection Analysis fetch error:", err);
+
+            console.error("[AI Reflection] Network/fetch error:", {
+                message:  err.message,
+                endpoint: `${BACKEND_URL}/api/journals/analyze`,
+                type:     err.name
+            });
+
             const errHtml = `
-                <div style="background:#fef2f2; border:1px solid #fecdd3; border-radius:12px; padding:14px 18px; margin-top:12px;">
-                    <p style="color: #b91c1c; font-weight:600; margin:0 0 6px 0; font-size:14px;">
-                        ⚠️ AI Journal Analysis is currently unavailable.
-                    </p>
-                    <p style="color: #4b5563; font-size: 13px; line-height: 1.5; margin:0;">
-                        Could not reach the backend analysis service.
+                <div style="background:#fef2f2; border:1px solid #fecdd3; border-radius:12px; padding:14px 18px; margin-top:8px;">
+                    <p style="color:#b91c1c; font-weight:600; margin:0 0 4px 0; font-size:14px;">⚠️ Could not reach AI service</p>
+                    <p style="color:#4b5563; font-size:13px; line-height:1.5; margin:0;">
+                        AI insight could not be generated right now. Your reflection has been saved successfully.
+                        <br><small style="color:#9ca3af;">Check the browser console and backend terminal for technical details.</small>
                     </p>
                 </div>
             `;
-            if (selector === "#reflectionAIBox") {
-                const contentEl = document.getElementById("reflectionAIContent");
-                if (contentEl) contentEl.innerHTML = errHtml;
+
+            if (isBoxMode && contentEl) {
+                contentEl.innerHTML = errHtml;
             } else {
                 reflectionBox.innerHTML = `<h3>✨ AI Reflection Insight</h3>${errHtml}`;
             }
@@ -3697,7 +4106,7 @@ document.addEventListener("DOMContentLoaded", function () {
             const res = await fetch(BACKEND_URL + "/api/chat/message", {
                 method: "POST",
                 headers: { "Content-Type": "application/json", "Authorization": "Bearer " + token },
-                body: JSON.stringify({ message })
+                body: JSON.stringify({ message, language: localStorage.getItem("innerVoiceAppLang") || (window.currentUser && window.currentUser.language) || "en" })
             });
             const data = await res.json();
             hideTypingIndicator();
@@ -4909,6 +5318,9 @@ document.addEventListener("DOMContentLoaded", function () {
         } else if (sectionId === '#music') {
             sectionId = '#resources';
             activeTabToOpen = 'music';
+        } else if (sectionId === '#quotes') {
+            sectionId = '#resources';
+            activeTabToOpen = 'quotes';
         }
 
         // Clean up running meditation timer if leaving resources
@@ -4948,7 +5360,7 @@ document.addEventListener("DOMContentLoaded", function () {
         document.querySelectorAll('.sidebar-link').forEach(link => {
             link.classList.remove('active');
             const href = link.getAttribute('href');
-            if (href === sectionId || (sectionId === '#resources' && (href === '#meditation' || href === '#music'))) {
+            if (href === sectionId || (sectionId === '#resources' && (href === '#meditation' || href === '#music' || href === '#quotes'))) {
                 link.classList.add('active');
             }
         });
@@ -4957,7 +5369,12 @@ document.addEventListener("DOMContentLoaded", function () {
         if (sectionId === '#dailyPlan' && typeof window.loadDailyPlan === 'function') {
             window.loadDailyPlan();
         }
+        if (sectionId === '#recommendations-section') {
+            if (typeof fetchRecommendations === 'function') fetchRecommendations();
+            if (typeof loadDailyRecommendations === 'function') loadDailyRecommendations();
+        }
         if (sectionId === '#goals') {
+            if (typeof loadDailyChallenges === 'function') loadDailyChallenges();
             if (typeof loadGoalHistory === 'function') loadGoalHistory();
             if (typeof loadHabits === 'function') loadHabits();
         }
@@ -4979,6 +5396,10 @@ document.addEventListener("DOMContentLoaded", function () {
         }
         if (sectionId === '#aiInsights' && typeof initAiInsights === 'function') {
             initAiInsights();
+        }
+        if (sectionId === '#admin') {
+            if (typeof window.loadAdminDashboard === 'function') window.loadAdminDashboard();
+            if (typeof window.loadAdminUsers === 'function') window.loadAdminUsers(1);
         }
     }
 
@@ -5051,6 +5472,10 @@ document.addEventListener("DOMContentLoaded", function () {
     ===================================================== */
 
     function updateLoginStatus() {
+
+        if (typeof window.checkAdminRoleNav === 'function') {
+            window.checkAdminRoleNav();
+        }
 
         if (!currentUser) return;
 
@@ -5637,12 +6062,12 @@ document.addEventListener("DOMContentLoaded", function () {
         const insight = loadedInsights.find(i => i.id === id);
         if(!insight) return;
         
-        document.getElementById('aiModalCategory').textContent = insight.category;
+        (function(){ const el = document.getElementById("aiModalCategory"); if(el) el.textContent =  insight.category; })();
         document.getElementById('aiModalCategory').className = 'ai-badge ' + getBadgeClass(insight.category);
-        document.getElementById('aiModalDate').textContent = insight.date;
-        document.getElementById('aiModalText').textContent = '"' + insight.description + '"';
-        document.getElementById('aiModalEvidence').innerHTML = insight.evidence;
-        document.getElementById('aiModalRecommendation').textContent = insight.recommendation;
+        (function(){ const el = document.getElementById("aiModalDate"); if(el) el.textContent =  insight.date; })();
+        (function(){ const el = document.getElementById("aiModalText"); if(el) el.textContent =  '"' + insight.description + '"'; })();
+        (function(){ const el = document.getElementById("aiModalEvidence"); if(el) el.innerHTML =  insight.evidence; })();
+        (function(){ const el = document.getElementById("aiModalRecommendation"); if(el) el.textContent =  insight.recommendation; })();
         
         const copyBtn = document.getElementById('btnAiModalCopy');
         copyBtn.onclick = () => {
@@ -5659,7 +6084,7 @@ document.addEventListener("DOMContentLoaded", function () {
             }
         };
 
-        document.getElementById('aiInsightModal').style.display = 'flex';
+        (function(){ const el = document.getElementById("aiInsightModal"); if(el) el.style.display =  'flex'; })();
     }
 
     // Event Listeners for Filters, Search, Modal
@@ -5687,7 +6112,7 @@ document.addEventListener("DOMContentLoaded", function () {
         const closeBtn = document.getElementById('closeAiInsightModal');
         if(closeBtn) {
             closeBtn.addEventListener('click', () => {
-                document.getElementById('aiInsightModal').style.display = 'none';
+                (function(){ const el = document.getElementById("aiInsightModal"); if(el) el.style.display =  'none'; })();
             });
         }
         
@@ -5795,18 +6220,7 @@ document.addEventListener("DOMContentLoaded", function () {
         }
     }
 
-    function markWellnessDone(activityName) {
-        if (!activityName) return;
-        const done = getWellnessDone();
-        if (!done.includes(activityName)) {
-            done.push(activityName);
-            try {
-                localStorage.setItem(wellnessTrackKey(), JSON.stringify(done));
-            } catch (e) { /* non-fatal */ }
-            renderWellnessTracker();
-            if (typeof loadAchievements === "function") loadAchievements(true);
-        }
-    }
+    // markWellnessDone is handled by the async unified helper above
 
     // Render tracker on load
     renderWellnessTracker();
@@ -5850,12 +6264,14 @@ document.addEventListener("DOMContentLoaded", function () {
 
 
     // =================================================================
-    // PROCEDURAL AUDIO SYNTHESIZER & SOUNDSCAPE ENGINE
-    // Works 100% offline using the Web Audio API without missing audio files
+    // PROCEDURAL AUDIO SYNTHESIZER & HYBRID SOUNDSCAPE ENGINE
+    // Combines direct HTML5 Audio playback with offline Web Audio API synthesis
     // =================================================================
     let audioCtx = null;
     let masterGainNode = null;
     let activeSynthNodes = [];
+    let synthIntervals = [];
+    let htmlAudioPlayer = null;
 
     function initAudioContext() {
         if (!audioCtx) {
@@ -5863,17 +6279,22 @@ document.addEventListener("DOMContentLoaded", function () {
             if (AudioContextClass) {
                 audioCtx = new AudioContextClass();
                 masterGainNode = audioCtx.createGain();
-                masterGainNode.gain.setValueAtTime(0.8, audioCtx.currentTime);
                 masterGainNode.connect(audioCtx.destination);
             }
         }
+        const currentVol = (typeof musicMuted !== 'undefined' && musicMuted) ? 0 : (typeof musicMasterVolume !== 'undefined' ? musicMasterVolume : 0.8);
+        if (masterGainNode && audioCtx) {
+            try {
+                masterGainNode.gain.setValueAtTime(currentVol, audioCtx.currentTime);
+            } catch (e) {}
+        }
         if (audioCtx && audioCtx.state === 'suspended') {
-            audioCtx.resume();
+            audioCtx.resume().catch(e => console.warn('[Audio] Context resume pending user interaction'));
         }
         return audioCtx;
     }
 
-    function stopAllSynthAudio() {
+    function stopAllSynthAudio(stopHtml = true) {
         activeSynthNodes.forEach(node => {
             try {
                 if (typeof node.stop === 'function') node.stop();
@@ -5881,6 +6302,16 @@ document.addEventListener("DOMContentLoaded", function () {
             } catch (e) { /* non-fatal */ }
         });
         activeSynthNodes = [];
+
+        synthIntervals.forEach(id => clearInterval(id));
+        synthIntervals = [];
+
+        if (stopHtml && htmlAudioPlayer) {
+            try {
+                htmlAudioPlayer.pause();
+                htmlAudioPlayer.currentTime = 0;
+            } catch (e) {}
+        }
     }
 
     function createNoiseBuffer(ctx, type) {
@@ -6512,15 +6943,18 @@ document.addEventListener("DOMContentLoaded", function () {
     // =================================================================
     // CALMING MUSIC & SOUNDSCAPES CONTROLLER
     // =================================================================
+    // =================================================================
+    // CALMING MUSIC & SOUNDSCAPES CONTROLLER
+    // =================================================================
     const MUSIC_PLAYLIST = [
-        { id: 1, title: "Gentle Rain & Distant Thunder", category: "nature", icon: "🌧️", duration: "05:00", durationSec: 300, soundType: "rain", desc: "Soothing natural rainfall filter for deep peace." },
-        { id: 2, title: "Ocean Waves & Coastal Breeze", category: "nature", icon: "🌊", duration: "05:00", durationSec: 300, soundType: "ocean", desc: "Rhythmic oceanic surf swells to release stress." },
-        { id: 3, title: "Morning Forest Birds & Stream", category: "nature", icon: "🌲", duration: "05:00", durationSec: 300, soundType: "forest", desc: "Gentle woodland ambient with bird chimes." },
-        { id: 4, title: "Tibetan Singing Bowl Resonance", category: "meditation", icon: "🧘", duration: "10:00", durationSec: 600, soundType: "zen-bowl", desc: "Harmonic bell frequencies for mental stillness." },
-        { id: 5, title: "Cosmic Om Meditative Drone", category: "meditation", icon: "🕉️", duration: "10:00", durationSec: 600, soundType: "om-drone", desc: "136.1Hz Earth frequency harmonic chord." },
-        { id: 6, title: "Binaural Alpha Waves (Focus)", category: "focus", icon: "🧠", duration: "08:00", durationSec: 480, soundType: "focus", desc: "10Hz differential stereo waves for concentration." },
-        { id: 7, title: "Midnight Calm Lofi Piano", category: "focus", icon: "🎹", duration: "04:30", durationSec: 270, soundType: "piano", desc: "Gentle repetitive pentatonic melody for study." },
-        { id: 8, title: "Deep Delta Sleep Soundscape", category: "sleep", icon: "🌙", duration: "15:00", durationSec: 900, soundType: "sleep", desc: "2Hz restorative brainwave sleep frequency." }
+        { id: 1, title: "Gentle Rain & Distant Thunder", category: "nature", icon: "🌧️", duration: "05:00", durationSec: 300, soundType: "rain", audioUrl: "./assets/audio/rain.mp3", desc: "Soothing natural rainfall filter for deep peace." },
+        { id: 2, title: "Ocean Waves & Coastal Breeze", category: "nature", icon: "🌊", duration: "05:00", durationSec: 300, soundType: "ocean", audioUrl: "./assets/audio/ocean.mp3", desc: "Rhythmic oceanic surf swells to release stress." },
+        { id: 3, title: "Morning Forest Birds & Stream", category: "nature", icon: "🌲", duration: "05:00", durationSec: 300, soundType: "forest", audioUrl: "./assets/audio/forest.mp3", desc: "Gentle woodland ambient with bird chimes." },
+        { id: 4, title: "Tibetan Singing Bowl Resonance", category: "meditation", icon: "🧘", duration: "10:00", durationSec: 600, soundType: "zen-bowl", audioUrl: "./assets/audio/zen-bowl.mp3", desc: "Harmonic bell frequencies for mental stillness." },
+        { id: 5, title: "Cosmic Om Meditative Drone", category: "meditation", icon: "🕉️", duration: "10:00", durationSec: 600, soundType: "om-drone", audioUrl: "./assets/audio/om-drone.mp3", desc: "136.1Hz Earth frequency harmonic chord." },
+        { id: 6, title: "Binaural Alpha Waves (Focus)", category: "focus", icon: "🧠", duration: "08:00", durationSec: 480, soundType: "focus", audioUrl: "./assets/audio/focus.mp3", desc: "10Hz differential stereo waves for concentration." },
+        { id: 7, title: "Midnight Calm Lofi Piano", category: "focus", icon: "🎹", duration: "04:30", durationSec: 270, soundType: "piano", audioUrl: "./assets/audio/piano.mp3", desc: "Gentle repetitive pentatonic melody for study." },
+        { id: 8, title: "Deep Delta Sleep Soundscape", category: "sleep", icon: "🌙", duration: "15:00", durationSec: 900, soundType: "sleep", audioUrl: "./assets/audio/sleep.mp3", desc: "2Hz restorative brainwave sleep frequency." }
     ];
 
     let currentMusicTrackIdx = 0;
@@ -6531,6 +6965,33 @@ document.addEventListener("DOMContentLoaded", function () {
     let musicMuted           = false;
     let musicActiveCategory  = "all";
     let musicSearchQuery     = "";
+    let currentMusicEngine   = "none";
+
+    function getOrInitHtmlAudioPlayer() {
+        if (!htmlAudioPlayer) {
+            htmlAudioPlayer = new Audio();
+            htmlAudioPlayer.loop = true;
+
+            const logAudioState = (evtName) => {
+                console.log(`[Music HTML5 Audio Event: ${evtName}]`, {
+                    src: htmlAudioPlayer?.src,
+                    paused: htmlAudioPlayer?.paused,
+                    muted: htmlAudioPlayer?.muted,
+                    volume: htmlAudioPlayer?.volume,
+                    readyState: htmlAudioPlayer?.readyState,
+                    currentTime: htmlAudioPlayer?.currentTime,
+                    duration: htmlAudioPlayer?.duration,
+                    networkState: htmlAudioPlayer?.networkState,
+                    error: htmlAudioPlayer?.error ? { code: htmlAudioPlayer.error.code, message: htmlAudioPlayer.error.message } : null
+                });
+            };
+
+            ['loadedmetadata', 'canplay', 'playing', 'waiting', 'stalled', 'error', 'pause'].forEach(evt => {
+                htmlAudioPlayer.addEventListener(evt, () => logAudioState(evt));
+            });
+        }
+        return htmlAudioPlayer;
+    }
 
     function musicFavoritesKey() {
         return currentUser ? "innerVoiceMusicFavs_" + currentUser.email : "innerVoiceMusicFavs_anon";
@@ -6673,7 +7134,7 @@ document.addEventListener("DOMContentLoaded", function () {
         }
     }
 
-    window.playMusicTrack = function(index) {
+    window.playMusicTrack = async function(index) {
         if (index < 0 || index >= MUSIC_PLAYLIST.length) return;
 
         // If clicking same track that's already playing, toggle pause
@@ -6682,62 +7143,164 @@ document.addEventListener("DOMContentLoaded", function () {
             return;
         }
 
+        // Stop all previous audio engines completely before playing new track
+        stopAllSynthAudio(true);
+        if (htmlAudioPlayer) {
+            try {
+                htmlAudioPlayer.pause();
+            } catch (e) {}
+        }
+
         currentMusicTrackIdx = index;
         const track = MUSIC_PLAYLIST[currentMusicTrackIdx];
+        let playedSuccessfully = false;
+        currentMusicEngine = "none";
 
-        initAudioContext();
-        stopAllSynthAudio();
+        console.log(`[Music] Selected track #${track.id}: "${track.title}" (URL: ${track.audioUrl})`);
 
-        musicPlaying = true;
-        musicCurrentSeconds = 0;
+        // 1. Try HTML5 Audio as PRIMARY engine
+        if (track.audioUrl) {
+            try {
+                const player = getOrInitHtmlAudioPlayer();
+                player.src = track.audioUrl;
+                player.volume = musicMuted ? 0 : musicMasterVolume;
+                player.muted = musicMuted;
 
-        startProceduralSoundscape(track.soundType);
+                console.log("[Music] play() called for HTML5 Audio");
+                await player.play();
+                console.log("[Music] play() resolved successfully for HTML5 Audio");
 
-        clearInterval(musicTimerInterval);
-        musicTimerInterval = setInterval(() => {
-            musicCurrentSeconds++;
-            if (musicCurrentSeconds >= track.durationSec) {
-                // Loop or go to next
-                musicCurrentSeconds = 0;
-                markWellnessDone("Soundscape: " + track.title);
+                playedSuccessfully = true;
+                currentMusicEngine = "html5";
+            } catch (err) {
+                console.warn(`[Music] HTML5 Audio play failed for track #${track.id}:`, err.message);
             }
-            updatePlayerBarUI();
-        }, 1000);
+        }
 
-        updatePlayerBarUI();
-        renderMusicPlaylist();
+        // 2. Web Audio synthesis fallback
+        if (!playedSuccessfully && track.soundType) {
+            try {
+                initAudioContext();
+                startProceduralSoundscape(track.soundType);
+                playedSuccessfully = true;
+                currentMusicEngine = "synth";
+                console.log(`[Music] Web Audio API soundscape active as fallback for track #${track.id}`);
+            } catch (err) {
+                console.error(`[Music] Web Audio fallback failed for track #${track.id}:`, err.message);
+            }
+        }
+
+        if (playedSuccessfully) {
+            musicPlaying = true;
+            musicCurrentSeconds = 0;
+
+            clearInterval(musicTimerInterval);
+            musicTimerInterval = setInterval(() => {
+                if (currentMusicEngine === "html5" && htmlAudioPlayer && !htmlAudioPlayer.paused) {
+                    musicCurrentSeconds = Math.floor(htmlAudioPlayer.currentTime);
+                    if (htmlAudioPlayer.ended) {
+                        musicCurrentSeconds = 0;
+                        markWellnessDone("Soundscape: " + track.title);
+                    }
+                } else {
+                    musicCurrentSeconds++;
+                    if (musicCurrentSeconds >= track.durationSec) {
+                        musicCurrentSeconds = 0;
+                        markWellnessDone("Soundscape: " + track.title);
+                    }
+                }
+                updatePlayerBarUI();
+            }, 1000);
+
+            updatePlayerBarUI();
+            renderMusicPlaylist();
+        } else {
+            musicPlaying = false;
+            currentMusicEngine = "none";
+            stopAllSynthAudio(true);
+            updatePlayerBarUI();
+            renderMusicPlaylist();
+            showMessage("⚠️ Unable to play this track. Please try another song.");
+        }
     };
 
     window.pauseMusicTrack = function() {
         if (!musicPlaying) return;
         musicPlaying = false;
         clearInterval(musicTimerInterval);
-        stopAllSynthAudio();
+
+        console.log("[Music] pause() called");
+        if (currentMusicEngine === "html5" && htmlAudioPlayer) {
+            try {
+                htmlAudioPlayer.pause();
+            } catch (e) {}
+        } else {
+            stopAllSynthAudio(false);
+        }
+
         updatePlayerBarUI();
         renderMusicPlaylist();
     };
 
-    window.resumeMusicTrack = function() {
+    window.resumeMusicTrack = async function() {
         if (musicPlaying) return;
         const track = MUSIC_PLAYLIST[currentMusicTrackIdx];
         if (!track) return;
 
-        initAudioContext();
-        musicPlaying = true;
-        startProceduralSoundscape(track.soundType);
+        let resumed = false;
 
-        clearInterval(musicTimerInterval);
-        musicTimerInterval = setInterval(() => {
-            musicCurrentSeconds++;
-            if (musicCurrentSeconds >= track.durationSec) {
-                musicCurrentSeconds = 0;
-                markWellnessDone("Soundscape: " + track.title);
+        if (track.audioUrl) {
+            try {
+                const player = getOrInitHtmlAudioPlayer();
+                if (!player.src || !player.src.includes(track.audioUrl.replace('./', ''))) {
+                    player.src = track.audioUrl;
+                }
+                player.volume = musicMuted ? 0 : musicMasterVolume;
+                player.muted = musicMuted;
+                console.log("[Music] play() called on resume");
+                await player.play();
+                console.log("[Music] play() resolved on resume");
+                resumed = true;
+                currentMusicEngine = "html5";
+            } catch (err) {
+                console.warn("[Music] Resume HTML5 audio failed:", err.message);
             }
-            updatePlayerBarUI();
-        }, 1000);
+        }
 
-        updatePlayerBarUI();
-        renderMusicPlaylist();
+        if (!resumed && track.soundType) {
+            try {
+                initAudioContext();
+                startProceduralSoundscape(track.soundType);
+                resumed = true;
+                currentMusicEngine = "synth";
+            } catch (err) {}
+        }
+
+        if (resumed) {
+            musicPlaying = true;
+            clearInterval(musicTimerInterval);
+            musicTimerInterval = setInterval(() => {
+                if (currentMusicEngine === "html5" && htmlAudioPlayer && !htmlAudioPlayer.paused) {
+                    musicCurrentSeconds = Math.floor(htmlAudioPlayer.currentTime);
+                } else {
+                    musicCurrentSeconds++;
+                }
+                if (musicCurrentSeconds >= track.durationSec) {
+                    musicCurrentSeconds = 0;
+                    markWellnessDone("Soundscape: " + track.title);
+                }
+                updatePlayerBarUI();
+            }, 1000);
+            updatePlayerBarUI();
+            renderMusicPlaylist();
+        } else {
+            musicPlaying = false;
+            currentMusicEngine = "none";
+            stopAllSynthAudio(true);
+            updatePlayerBarUI();
+            renderMusicPlaylist();
+            showMessage("⚠️ Unable to play this track. Please try another song.");
+        }
     };
 
     window.toggleMusicPlay = function() {
@@ -6759,9 +7322,19 @@ document.addEventListener("DOMContentLoaded", function () {
     };
 
     window.stopMusicTrack = function() {
-        window.pauseMusicTrack();
+        musicPlaying = false;
+        clearInterval(musicTimerInterval);
+        stopAllSynthAudio(true);
+        if (htmlAudioPlayer) {
+            try {
+                htmlAudioPlayer.pause();
+                htmlAudioPlayer.currentTime = 0;
+            } catch (e) {}
+        }
         musicCurrentSeconds = 0;
+        currentMusicEngine = "none";
         updatePlayerBarUI();
+        renderMusicPlaylist();
     };
 
     window.seekMusicTrack = function(val) {
@@ -6769,24 +7342,39 @@ document.addEventListener("DOMContentLoaded", function () {
         if (!track) return;
         const pct = parseFloat(val) / 100;
         musicCurrentSeconds = Math.round(pct * track.durationSec);
+        if (htmlAudioPlayer && htmlAudioPlayer.duration && !isNaN(htmlAudioPlayer.duration)) {
+            try {
+                htmlAudioPlayer.currentTime = pct * htmlAudioPlayer.duration;
+            } catch (e) {}
+        }
         updatePlayerBarUI();
     };
 
     window.setMusicVolume = function(val) {
         musicMasterVolume = parseFloat(val);
+        if (htmlAudioPlayer) {
+            htmlAudioPlayer.volume = musicMasterVolume;
+        }
         if (!musicMuted && masterGainNode && audioCtx) {
-            masterGainNode.gain.setValueAtTime(musicMasterVolume, audioCtx.currentTime);
+            try {
+                masterGainNode.gain.setValueAtTime(musicMasterVolume, audioCtx.currentTime);
+            } catch (e) {}
         }
         const muteBtn = document.getElementById("musicMuteBtn");
-        if (muteBtn) muteBtn.textContent = musicMasterVolume === 0 ? "🔇" : "🔊";
+        if (muteBtn) muteBtn.textContent = (musicMasterVolume === 0 || musicMuted) ? "🔇" : "🔊";
     };
 
     window.toggleMusicMute = function() {
         musicMuted = !musicMuted;
-        const muteBtn = document.getElementById("musicMuteBtn");
-        if (masterGainNode && audioCtx) {
-            masterGainNode.gain.setValueAtTime(musicMuted ? 0 : musicMasterVolume, audioCtx.currentTime);
+        if (htmlAudioPlayer) {
+            htmlAudioPlayer.muted = musicMuted;
         }
+        if (masterGainNode && audioCtx) {
+            try {
+                masterGainNode.gain.setValueAtTime(musicMuted ? 0 : musicMasterVolume, audioCtx.currentTime);
+            } catch (e) {}
+        }
+        const muteBtn = document.getElementById("musicMuteBtn");
         if (muteBtn) muteBtn.textContent = musicMuted ? "🔇" : "🔊";
     };
 
@@ -7770,8 +8358,8 @@ document.addEventListener("DOMContentLoaded", function () {
             const calcData = await calcRes.json();
             
             if (calcData.success) {
-                document.getElementById("statWellnessScore").textContent = calcData.score;
-                document.getElementById("statWellnessReason").textContent = calcData.reason;
+                (function(){ const el = document.getElementById("statWellnessScore"); if(el) el.textContent =  calcData.score; })();
+                (function(){ const el = document.getElementById("statWellnessReason"); if(el) el.textContent =  calcData.reason; })();
             }
             
             // Get history to render chart
@@ -7781,7 +8369,7 @@ document.addEventListener("DOMContentLoaded", function () {
             const histData = await histRes.json();
             
             if (histData.success && histData.history.length > 0) {
-                document.getElementById("wellnessChartPanel").style.display = "block";
+                (function(){ const el = document.getElementById("wellnessChartPanel"); if(el) el.style.display =  "block"; })();
                 
                 const labels = histData.history.map(item => new Date(item.score_date).toLocaleDateString()).reverse();
                 const scores = histData.history.map(item => item.score).reverse();
@@ -7844,7 +8432,7 @@ document.addEventListener("DOMContentLoaded", function () {
         if (!token) return;
         
         try {
-            document.getElementById("dailyPlanContainer").innerHTML = "<div class='dashboard-loading'>Generating your new plan...</div>";
+            (function(){ const el = document.getElementById("dailyPlanContainer"); if(el) el.innerHTML =  "<div class='dashboard-loading'>Generating your new plan...</div>"; })();
             const res = await fetch(BACKEND_URL + "/api/daily-plan/generate", {
                 method: "POST",
                 headers: { "Authorization": "Bearer " + token }
@@ -8001,7 +8589,7 @@ document.addEventListener("DOMContentLoaded", function () {
             if (data.success && data.report) {
                 renderWeeklyReport(data.report);
             } else {
-                document.getElementById("weeklyReportContainer").style.display = "block";
+                (function(){ const el = document.getElementById("weeklyReportContainer"); if(el) el.style.display =  "block"; })();
                 document.getElementById("weeklyReportDates").innerText = "Not enough data to generate your weekly report yet.";
             }
         } catch(e) {
@@ -8010,8 +8598,8 @@ document.addEventListener("DOMContentLoaded", function () {
     };
     
     window.renderWeeklyReport = function(report) {
-        document.getElementById("weeklyReportContainer").style.display = "block";
-        document.getElementById("weeklyReportContent").style.display = "block";
+        (function(){ const el = document.getElementById("weeklyReportContainer"); if(el) el.style.display =  "block"; })();
+        (function(){ const el = document.getElementById("weeklyReportContent"); if(el) el.style.display =  "block"; })();
         
         // Dates
         const start = new Date(report.week_start).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
@@ -8036,13 +8624,66 @@ document.addEventListener("DOMContentLoaded", function () {
         
         // Consistency
         document.getElementById("weeklyStatConsistencyText").innerText = report.consistency_score + "%";
-        document.getElementById("weeklyStatConsistencyBar").style.width = report.consistency_score + "%";
+        (function(){ const el = document.getElementById("weeklyStatConsistencyBar"); if(el) el.style.width =  report.consistency_score + "%"; })();
         
         // Strongest Day
         document.getElementById("weeklyStatStrongestDay").innerText = report.strongest_day || "Not enough data";
         
         // Recommendation
         document.getElementById("weeklyReportRecommendation").innerText = report.next_week_recommendation || "";
+    };
+
+    // ─────────────────────────────────────────────────────────────
+    // Native PDF Wellness Report Download
+    // Calls GET /api/reports/wellness/pdf with JWT, then triggers
+    // a browser file-download of the returned PDF.
+    // ─────────────────────────────────────────────────────────────
+    window.downloadWellnessPDF = async function() {
+        // Collect all PDF download buttons (weekly-report + analytics page)
+        const allBtns = document.querySelectorAll('.iv-download-pdf-btn');
+        const token = localStorage.getItem('innerVoiceToken') || localStorage.getItem('token');
+
+        if (!token) {
+            alert('You must be logged in to download your wellness report.');
+            return;
+        }
+
+        const setAllBtns = (disabled, text) => {
+            allBtns.forEach(b => { b.disabled = disabled; b.textContent = text; });
+        };
+
+        try {
+            setAllBtns(true, '⏳ Generating PDF...');
+
+            const response = await fetch('/api/reports/wellness/pdf', {
+                method: 'GET',
+                headers: { 'Authorization': 'Bearer ' + token }
+            });
+
+            if (!response.ok) {
+                const errData = await response.json().catch(() => ({}));
+                throw new Error(errData.error || errData.message || `Server error ${response.status}`);
+            }
+
+            // Trigger browser download
+            const blob = await response.blob();
+            const url  = URL.createObjectURL(blob);
+            const a    = document.createElement('a');
+            a.href     = url;
+            a.download = 'INNERVOICE_Wellness_Report.pdf';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+
+            setAllBtns(false, '✅ Downloaded!');
+            setTimeout(() => setAllBtns(false, '📄 Download PDF Report'), 2500);
+
+        } catch (err) {
+            console.error('PDF download error:', err);
+            alert('Failed to download PDF report: ' + err.message);
+            setAllBtns(false, '📄 Download PDF Report');
+        }
     };
 
     // --- Smart Habit Tracker (Phase 4) ---
@@ -8052,7 +8693,7 @@ document.addEventListener("DOMContentLoaded", function () {
         if (!token) return;
         
         try {
-            document.getElementById("habitTrackerSection").style.display = "block";
+            (function(){ const el = document.getElementById("habitTrackerSection"); if(el) el.style.display =  "block"; })();
             
             const [habitsRes, summaryRes] = await Promise.all([
                 fetch(BACKEND_URL + "/api/habits", { headers: { "Authorization": "Bearer " + token } }),
@@ -8068,7 +8709,7 @@ document.addEventListener("DOMContentLoaded", function () {
             if (summaryData.success) {
                 document.getElementById("habitSummaryText").innerText = `${summaryData.completed_today} / ${summaryData.total_active} habits completed today`;
                 document.getElementById("habitSummaryPercent").innerText = summaryData.completion_percentage + "%";
-                document.getElementById("habitSummaryBar").style.width = summaryData.completion_percentage + "%";
+                (function(){ const el = document.getElementById("habitSummaryBar"); if(el) el.style.width =  summaryData.completion_percentage + "%"; })();
             }
         } catch(e) {
             console.error("Failed to load habits:", e);
@@ -8224,7 +8865,7 @@ document.addEventListener("DOMContentLoaded", function () {
                     if (submitBtn) submitBtn.textContent = "Saved ✓";
                     showMessage("🌱 Habit created successfully!");
                     habitForm.reset();
-                    document.getElementById("habitTargetContainer").style.display = "none";
+                    (function(){ const el = document.getElementById("habitTargetContainer"); if(el) el.style.display =  "none"; })();
                     setTimeout(() => {
                         closeHabitModal();
                         if (submitBtn) {
@@ -8272,14 +8913,14 @@ document.addEventListener("DOMContentLoaded", function () {
                     document.getElementById("dashUserTitle").innerText = data.levelInfo.title;
                     document.getElementById("dashUserXp").innerText = data.xp;
                     document.getElementById("dashXpToNext").innerText = data.levelInfo.xpToNext;
-                    document.getElementById("dashLevelProgressBar").style.width = data.levelInfo.progressPercent + "%";
+                    (function(){ const el = document.getElementById("dashLevelProgressBar"); if(el) el.style.width =  data.levelInfo.progressPercent + "%"; })();
                 }
                 
                 // Update Achievements summary section
                 if(document.getElementById("dashAchSummary")) {
                     document.getElementById("dashAchSummary").innerText = `Unlocked: ${data.stats.unlocked} / ${data.stats.total} Badges (${data.stats.percentage}%)`;
-                    document.getElementById("dashAchProgressBar").style.width = data.stats.percentage + "%";
-                    document.getElementById("dashboardAchievementsPanel").style.display = "block";
+                    (function(){ const el = document.getElementById("dashAchProgressBar"); if(el) el.style.width =  data.stats.percentage + "%"; })();
+                    (function(){ const el = document.getElementById("dashboardAchievementsPanel"); if(el) el.style.display =  "block"; })();
                 }
             }
             
@@ -8323,7 +8964,7 @@ document.addEventListener("DOMContentLoaded", function () {
                 
                 document.getElementById("achOverallTitle").innerText = `🏆 ${data.stats.unlocked} of ${data.stats.total} Badges Unlocked`;
                 document.getElementById("achOverallPct").innerText = data.stats.percentage + "%";
-                document.getElementById("achOverallProgressBar").style.width = data.stats.percentage + "%";
+                (function(){ const el = document.getElementById("achOverallProgressBar"); if(el) el.style.width =  data.stats.percentage + "%"; })();
                 
                 document.getElementById("unlockedFilterNum").innerText = data.stats.unlocked;
                 document.getElementById("lockedFilterNum").innerText = data.stats.total - data.stats.unlocked;
@@ -8399,6 +9040,7 @@ document.addEventListener("DOMContentLoaded", function () {
         currentUser = null;
         localStorage.removeItem("innerVoiceToken");
         localStorage.removeItem("innerVoiceCurrentUser");
+        localStorage.removeItem("user_role");
         saveData();
 
         if (typeof showMessage === 'function') {
@@ -8957,7 +9599,7 @@ async function handleNotifClick(id, link) {
     if (link && typeof showSection === 'function') {
         showSection(link);
     }
-    document.getElementById('notifDropdown').style.display = 'none';
+    (function(){ const el = document.getElementById("notifDropdown"); if(el) el.style.display =  'none'; })();
     
     // Mark read
     const n = currentNotifications.find(x => x.id === id);
@@ -8969,10 +9611,12 @@ async function handleNotifClick(id, link) {
 async function markNotificationRead(id) {
     const token = getToken();
     try {
-        await fetch(`${BACKEND_URL}/api/notifications/${id}/read`, {
+        const response = await fetch(`${BACKEND_URL}/api/notifications/${id}/read`, {
             method: 'PUT',
             headers: { "Authorization": "Bearer " + token }
         });
+        const data = await response.json();
+        if (!response.ok || !data.success) throw new Error(data.message || "Request failed");
         const n = currentNotifications.find(x => x.id === id);
         if (n) n.is_read = 1;
         
@@ -8992,10 +9636,12 @@ async function markNotificationRead(id) {
 window.markAllNotificationsRead = async function markAllNotificationsRead() {
     const token = getToken();
     try {
-        await fetch(`${BACKEND_URL}/api/notifications/read-all`, {
+        const response = await fetch(`${BACKEND_URL}/api/notifications/read-all`, {
             method: 'PUT',
             headers: { "Authorization": "Bearer " + token }
         });
+        const data = await response.json();
+        if (!response.ok || !data.success) throw new Error(data.message || "Request failed");
         currentNotifications.forEach(n => n.is_read = 1);
         renderNotifications();
         renderNotifDropdown();
@@ -9009,10 +9655,12 @@ window.markAllNotificationsRead = async function markAllNotificationsRead() {
 async function deleteNotification(id) {
     const token = getToken();
     try {
-        await fetch(`${BACKEND_URL}/api/notifications/${id}`, {
+        const response = await fetch(`${BACKEND_URL}/api/notifications/${id}`, {
             method: 'DELETE',
             headers: { "Authorization": "Bearer " + token }
         });
+        const data = await response.json();
+        if (!response.ok || !data.success) throw new Error(data.message || "Request failed");
         currentNotifications = currentNotifications.filter(x => x.id !== id);
         renderNotifications();
         renderNotifDropdown();
@@ -9049,13 +9697,13 @@ async function loadWellnessAnalytics(period = '30') {
             renderAnalyticsCenter(data);
         } else {
             console.warn("Analytics Error:", data.message);
-            document.getElementById("analyticsContent").style.display = "none";
-            document.getElementById("analyticsEmptyState").style.display = "block";
+            (function(){ const el = document.getElementById("analyticsContent"); if(el) el.style.display =  "none"; })();
+            (function(){ const el = document.getElementById("analyticsEmptyState"); if(el) el.style.display =  "block"; })();
         }
     } catch (err) {
         console.error("Error fetching analytics:", err);
-        document.getElementById("analyticsContent").style.display = "none";
-        document.getElementById("analyticsEmptyState").style.display = "block";
+        (function(){ const el = document.getElementById("analyticsContent"); if(el) el.style.display =  "none"; })();
+        (function(){ const el = document.getElementById("analyticsEmptyState"); if(el) el.style.display =  "block"; })();
     }
 }
 
@@ -9074,7 +9722,7 @@ function renderAnalyticsCenter(data) {
     emptyState.style.display = "none";
 
     // 1. Summary & Strengths
-    document.getElementById("analyticsSummary").textContent = data.summary || "Keep tracking to generate insights.";
+    (function(){ const el = document.getElementById("analyticsSummary"); if(el) el.textContent =  data.summary || "Keep tracking to generate insights."; })();
     
     const strengthsEl = document.getElementById("analyticsStrengths");
     strengthsEl.innerHTML = (data.strengths || []).map(s => `<li>${escapeHTMLSafe(s)}</li>`).join('');
@@ -9083,7 +9731,7 @@ function renderAnalyticsCenter(data) {
     improvementsEl.innerHTML = (data.improvements || []).map(s => `<li>${escapeHTMLSafe(s)}</li>`).join('');
 
     // 2. Main Metrics
-    document.getElementById("analyticsScore").textContent = data.wellnessScore.current || "--";
+    (function(){ const el = document.getElementById("analyticsScore"); if(el) el.textContent =  data.wellnessScore.current || "--"; })();
     const changeEl = document.getElementById("analyticsScoreChange");
     if (data.wellnessScore.change > 0) {
         changeEl.textContent = `+${data.wellnessScore.change} points`;
@@ -9096,13 +9744,13 @@ function renderAnalyticsCenter(data) {
         changeEl.style.color = "#6b7280";
     }
 
-    document.getElementById("analyticsMoodAvg").textContent = data.mood.avgScore > 0 ? data.mood.avgScore : "--";
-    document.getElementById("analyticsMoodFreq").textContent = data.mood.mostFrequent || "--";
-    document.getElementById("analyticsMoodStats").textContent = `${data.mood.positivePct}% Positive | ${data.mood.consistency}% Consistent`;
+    (function(){ const el = document.getElementById("analyticsMoodAvg"); if(el) el.textContent =  data.mood.avgScore > 0 ? data.mood.avgScore : "--"; })();
+    (function(){ const el = document.getElementById("analyticsMoodFreq"); if(el) el.textContent =  data.mood.mostFrequent || "--"; })();
+    (function(){ const el = document.getElementById("analyticsMoodStats"); if(el) el.textContent =  `${data.mood.positivePct}% Positive | ${data.mood.consistency}% Consistent`; })();
 
-    document.getElementById("analyticsGoalPct").textContent = `${data.goals.completionPct}%`;
-    document.getElementById("analyticsHabitPct").textContent = `${data.habits.consistency}%`;
-    document.getElementById("analyticsGoalStats").textContent = `${data.goals.completed} Goals Done | ${data.habits.completed} Habits Done`;
+    (function(){ const el = document.getElementById("analyticsGoalPct"); if(el) el.textContent =  `${data.goals.completionPct}%`; })();
+    (function(){ const el = document.getElementById("analyticsHabitPct"); if(el) el.textContent =  `${data.habits.consistency}%`; })();
+    (function(){ const el = document.getElementById("analyticsGoalStats"); if(el) el.textContent =  `${data.goals.completed} Goals Done | ${data.habits.completed} Habits Done`; })();
 
     // 3. Personal Bests
     const bestsEl = document.getElementById("analyticsBests");
@@ -9225,9 +9873,9 @@ async function loadAnalyticsPreview() {
         });
         const data = await res.json();
         if(data.success) {
-            document.getElementById('dashPreviewMood').textContent = data.mood.avgScore > 0 ? data.mood.avgScore : '--';
-            document.getElementById('dashPreviewGoals').textContent = `${data.goals.completionPct}%`;
-            document.getElementById('dashPreviewHabits').textContent = `${data.habits.consistency}%`;
+            (function(){ const el = document.getElementById("dashPreviewMood"); if(el) el.textContent =  data.mood.avgScore > 0 ? data.mood.avgScore : '--'; })();
+            (function(){ const el = document.getElementById("dashPreviewGoals"); if(el) el.textContent =  `${data.goals.completionPct}%`; })();
+            (function(){ const el = document.getElementById("dashPreviewHabits"); if(el) el.textContent =  `${data.habits.consistency}%`; })();
         }
     } catch(e) {
         console.error("Error loading analytics preview", e);
@@ -9386,3 +10034,1685 @@ if (originalLoadDashboard) {
         setTimeout(fetchWeeklyWellnessInsights, 1000); // delay to let auth initialize
     });
 }
+
+
+// =================================================================
+// ── MENTAL WELLNESS ASSESSMENTS (PHQ-9 & GAD-7) ──────────────────
+// =================================================================
+(function() {
+window.fetchWithAuth = async function(url, options = {}) {
+    const token = typeof getToken === 'function' ? getToken() : (localStorage.getItem("innerVoiceToken") || null);
+    const baseUrl = typeof BACKEND_URL !== 'undefined' ? BACKEND_URL : "http://localhost:5000";
+    const fullUrl = url.startsWith("http") ? url : baseUrl + url;
+    const headers = {
+        "Content-Type": "application/json",
+        ...(options.headers || {})
+    };
+    if (token) {
+        headers["Authorization"] = "Bearer " + token;
+    }
+    return fetch(fullUrl, { ...options, headers });
+};
+const fetchWithAuth = window.fetchWithAuth;
+
+    if (typeof window.openEmergencyModal !== 'function') {
+        window.openEmergencyModal = function() {
+            if (typeof window.showSection === 'function') {
+                window.showSection('#emergency');
+            }
+            window.location.hash = '#emergency';
+        };
+    }
+
+    const PHQ9_QUESTIONS = [
+        "Little interest or pleasure in doing things",
+        "Feeling down, depressed, or hopeless",
+        "Trouble falling or staying asleep, or sleeping too much",
+        "Feeling tired or having little energy",
+        "Poor appetite or overeating",
+        "Feeling bad about yourself — or that you are a failure or have let yourself or your family down",
+        "Trouble concentrating on things, such as reading the newspaper or watching television",
+        "Moving or speaking so slowly that other people could have noticed. Or the opposite — being so fidgety or restless that you have been moving around a lot more than usual",
+        "Thoughts that you would be better off dead, or of hurting yourself in some way"
+    ];
+
+    const GAD7_QUESTIONS = [
+        "Feeling nervous, anxious, or on edge",
+        "Not being able to stop or control worrying",
+        "Worrying too much about different things",
+        "Trouble relaxing",
+        "Being so restless that it is hard to sit still",
+        "Becoming easily annoyed or irritable",
+        "Feeling afraid, as if something awful might happen"
+    ];
+
+    const ANSWER_OPTIONS = [
+        { label: "Not at all", value: 0 },
+        { label: "Several days", value: 1 },
+        { label: "More than half the days", value: 2 },
+        { label: "Nearly every day", value: 3 }
+    ];
+
+    let currentAssessmentType = null;
+    let currentQuestionIdx = 0;
+    let currentAnswers = [];
+
+    window.startAssessment = function(type) {
+        if (type !== 'phq9' && type !== 'gad7') return;
+        currentAssessmentType = type;
+        currentQuestionIdx = 0;
+        const totalQs = type === 'phq9' ? 9 : 7;
+        currentAnswers = new Array(totalQs).fill(null);
+
+        const card = document.getElementById("assessmentQuestionnaireCard");
+        const resCard = document.getElementById("assessmentResultCard");
+        if (card) card.style.display = "block";
+        if (resCard) resCard.style.display = "none";
+
+        renderQuestion();
+        card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    };
+
+    function renderQuestion() {
+        const questions = currentAssessmentType === 'phq9' ? PHQ9_QUESTIONS : GAD7_QUESTIONS;
+        const total = questions.length;
+
+        const badgeEl = document.getElementById("assessmentTypeBadge");
+        const progressTextEl = document.getElementById("assessmentProgressText");
+        const progressBarEl = document.getElementById("assessmentProgressBar");
+        const questionTextEl = document.getElementById("assessmentQuestionText");
+        const optionsContainer = document.getElementById("assessmentOptionsContainer");
+        const prevBtn = document.getElementById("assessmentPrevBtn");
+        const nextBtn = document.getElementById("assessmentNextBtn");
+        const submitBtn = document.getElementById("assessmentSubmitBtn");
+
+        if (badgeEl) badgeEl.textContent = currentAssessmentType === 'phq9' ? "PHQ-9 (Depression Screening)" : "GAD-7 (Anxiety Screening)";
+        if (progressTextEl) progressTextEl.textContent = `Question ${currentQuestionIdx + 1} of ${total}`;
+        if (progressBarEl) progressBarEl.style.width = `${((currentQuestionIdx + 1) / total) * 100}%`;
+        if (questionTextEl) questionTextEl.textContent = `${currentQuestionIdx + 1}. ${questions[currentQuestionIdx]}`;
+
+        if (optionsContainer) {
+            optionsContainer.innerHTML = ANSWER_OPTIONS.map(opt => {
+                const isSelected = currentAnswers[currentQuestionIdx] === opt.value;
+                return `
+                    <button type="button" class="iv-btn" onclick="selectAssessmentAnswer(${opt.value})"
+                        style="text-align:left; justify-content:flex-start; width:100%; padding:14px 18px; font-size:14px; font-weight:600; 
+                        background:${isSelected ? 'var(--primary-light)' : 'var(--bg-light)'}; 
+                        color:${isSelected ? 'var(--primary)' : 'var(--text-dark)'}; 
+                        border:2px solid ${isSelected ? 'var(--primary)' : 'var(--border-color)'}; border-radius:10px; transition:all 0.2s;">
+                        <span style="display:inline-block; width:22px; height:22px; border-radius:50%; border:2px solid ${isSelected ? 'var(--primary)' : '#9ca3af'}; background:${isSelected ? 'var(--primary)' : 'transparent'}; margin-right:12px; text-align:center; color:#fff; font-size:12px; line-height:18px;">
+                            ${isSelected ? '✓' : ''}
+                        </span>
+                        ${opt.label} (${opt.value})
+                    </button>
+                `;
+            }).join('');
+        }
+
+        if (prevBtn) prevBtn.style.display = currentQuestionIdx > 0 ? "inline-block" : "none";
+
+        if (currentQuestionIdx === total - 1) {
+            if (nextBtn) nextBtn.style.display = "none";
+            if (submitBtn) submitBtn.style.display = "inline-block";
+        } else {
+            if (nextBtn) nextBtn.style.display = "inline-block";
+            if (submitBtn) submitBtn.style.display = "none";
+        }
+    }
+
+    window.selectAssessmentAnswer = function(val) {
+        currentAnswers[currentQuestionIdx] = val;
+        renderQuestion();
+    };
+
+    window.prevAssessmentQuestion = function() {
+        if (currentQuestionIdx > 0) {
+            currentQuestionIdx--;
+            renderQuestion();
+        }
+    };
+
+    window.nextAssessmentQuestion = function() {
+        if (currentAnswers[currentQuestionIdx] === null) {
+            if (typeof showMessage === 'function') showMessage("⚠️ Please select an answer before proceeding to the next question.");
+            return;
+        }
+        const questions = currentAssessmentType === 'phq9' ? PHQ9_QUESTIONS : GAD7_QUESTIONS;
+        if (currentQuestionIdx < questions.length - 1) {
+            currentQuestionIdx++;
+            renderQuestion();
+        }
+    };
+
+    window.submitAssessment = async function() {
+        if (currentAnswers.some(ans => ans === null)) {
+            if (typeof showMessage === 'function') showMessage("⚠️ Please answer all questions before submitting the assessment.");
+            return;
+        }
+
+        const endpoint = currentAssessmentType === 'phq9' ? '/api/assessments/phq9' : '/api/assessments/gad7';
+
+        try {
+            const res = await fetchWithAuth(endpoint, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ answers: currentAnswers })
+            });
+
+            if (!res.ok) {
+                const errData = await res.json().catch(() => ({}));
+                if (typeof showMessage === 'function') showMessage("❌ Error: " + (errData.message || "Failed to submit assessment"));
+                return;
+            }
+
+            const data = await res.json();
+            displayAssessmentResult(data);
+            window.loadAssessmentHistory();
+            if (typeof awardXp === 'function') awardXp(25);
+            if (typeof showMessage === 'function') showMessage("✨ Assessment submitted successfully (+25 XP)!");
+        } catch (err) {
+            console.error("Assessment submit error:", err);
+            if (typeof showMessage === 'function') showMessage("❌ Failed to connect to server. Please try again.");
+        }
+    };
+
+    function displayAssessmentResult(data) {
+        const qCard = document.getElementById("assessmentQuestionnaireCard");
+        const resCard = document.getElementById("assessmentResultCard");
+
+        if (qCard) qCard.style.display = "none";
+        if (resCard) resCard.style.display = "block";
+
+        const titleEl = document.getElementById("resultTypeTitle");
+        const dateEl = document.getElementById("resultDateText");
+        const scoreEl = document.getElementById("resultScoreValue");
+        const severityEl = document.getElementById("resultSeverityValue");
+        const adviceEl = document.getElementById("resultAdviceText");
+        const safetyBox = document.getElementById("safetyAlertBox");
+
+        if (titleEl) titleEl.textContent = data.assessment_type === 'phq9' ? "PHQ-9 Assessment Result" : "GAD-7 Assessment Result";
+        if (dateEl) dateEl.textContent = "Completed on " + new Date(data.created_at || Date.now()).toLocaleDateString();
+        if (scoreEl) scoreEl.textContent = `${data.total_score} / ${data.max_score}`;
+        if (severityEl) {
+            severityEl.textContent = data.severity;
+            if (data.severity === 'Minimal') severityEl.style.color = "#10b981";
+            else if (data.severity === 'Mild') severityEl.style.color = "#f59e0b";
+            else if (data.severity === 'Moderate') severityEl.style.color = "#f97316";
+            else severityEl.style.color = "#ef4444";
+        }
+
+        // Question 9 Safety Alert
+        if (data.flagQuestion9) {
+            if (safetyBox) safetyBox.style.display = "block";
+        } else {
+            if (safetyBox) safetyBox.style.display = "none";
+        }
+
+        // Advice text
+        if (adviceEl) {
+            if (data.severity === 'Minimal' || data.severity === 'Mild') {
+                adviceEl.textContent = "Your score indicates minimal to mild symptoms. Continue practicing daily wellness exercises and self-reflection.";
+            } else if (data.severity === 'Moderate' || data.severity === 'Moderately severe') {
+                adviceEl.textContent = "Your score indicates moderate symptoms. We recommend engaging in stress-reduction techniques and considering speaking with a healthcare professional.";
+            } else {
+                adviceEl.textContent = "Your score indicates severe symptoms. We strongly encourage reaching out to a qualified mental health professional or counselor for guidance.";
+            }
+        }
+
+        if (resCard) resCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+
+    window.resetAssessmentView = function() {
+        const qCard = document.getElementById("assessmentQuestionnaireCard");
+        const resCard = document.getElementById("assessmentResultCard");
+        if (qCard) qCard.style.display = "none";
+        if (resCard) resCard.style.display = "none";
+        currentAssessmentType = null;
+        currentQuestionIdx = 0;
+        currentAnswers = [];
+    };
+
+    window.loadAssessmentHistory = async function() {
+        const tbody = document.getElementById("assessmentHistoryTableBody");
+        if (!tbody) return;
+
+        try {
+            const res = await fetchWithAuth('/api/assessments/history');
+            if (!res.ok) return;
+            const data = await res.json();
+            const history = data.history || [];
+
+            if (history.length === 0) {
+                tbody.innerHTML = `
+                    <tr>
+                        <td colspan="4" style="text-align:center; padding:24px; color:var(--text-muted);">
+                            No past assessments recorded yet.
+                        </td>
+                    </tr>
+                `;
+                return;
+            }
+
+            tbody.innerHTML = history.map(item => {
+                const dateStr = new Date(item.created_at).toLocaleDateString();
+                const typeName = item.assessment_type.toUpperCase();
+                const maxScore = item.assessment_type === 'phq9' ? 27 : 21;
+
+                let sevColor = "#10b981";
+                if (item.severity === 'Mild') sevColor = "#f59e0b";
+                if (item.severity === 'Moderate') sevColor = "#f97316";
+                if (item.severity === 'Moderately severe' || item.severity === 'Severe') sevColor = "#ef4444";
+
+                return `
+                    <tr style="border-bottom:1px solid var(--border-color);">
+                        <td style="padding:12px;">${dateStr}</td>
+                        <td style="padding:12px; font-weight:600;">${typeName}</td>
+                        <td style="padding:12px; font-weight:700;">${item.total_score} / ${maxScore}</td>
+                        <td style="padding:12px;"><span style="color:${sevColor}; font-weight:700;">${item.severity}</span></td>
+                    </tr>
+                `;
+            }).join('');
+        } catch (err) {
+            console.error("Error loading assessment history:", err);
+        }
+    };
+
+    // Trigger history load on section navigation
+    const originalShowSection = window.showSection;
+    if (typeof originalShowSection === 'function') {
+        window.showSection = function(sectionId) {
+            originalShowSection(sectionId);
+            if (sectionId === '#assessment' && typeof window.loadAssessmentHistory === 'function') {
+                window.loadAssessmentHistory();
+            }
+        };
+    }
+})();
+
+// ============================================================================
+// SLEEP TRACKER LOGIC
+// ============================================================================
+(function() {
+    async function fetchWithAuth(url, options = {}) {
+        const token = typeof getToken === 'function' ? getToken() : (localStorage.getItem("innerVoiceToken") || null);
+        const baseUrl = typeof BACKEND_URL !== 'undefined' ? BACKEND_URL : "http://localhost:5000";
+        const fullUrl = url.startsWith("http") ? url : baseUrl + url;
+        const headers = {
+            "Content-Type": "application/json",
+            ...(options.headers || {})
+        };
+        if (token) {
+            headers["Authorization"] = "Bearer " + token;
+        }
+        return fetch(fullUrl, { ...options, headers });
+    }
+
+    // Save Sleep Record
+    window.saveSleepRecord = async function() {
+        const dateInput = document.getElementById('sleepDate');
+        const bedtimeInput = document.getElementById('sleepBedtime');
+        const wakeTimeInput = document.getElementById('sleepWakeTime');
+        const qualitySelect = document.getElementById('sleepQuality');
+        const notesInput = document.getElementById('sleepNotes');
+        const spinner = document.getElementById('sleepBtnSpinner');
+        const btnText = document.getElementById('sleepBtnText');
+        const feedback = document.getElementById('sleepFeedback');
+
+        if (!dateInput.value || !bedtimeInput.value || !wakeTimeInput.value || !qualitySelect.value) {
+            return;
+        }
+
+        spinner.style.display = 'inline-block';
+        btnText.textContent = 'Saving...';
+        feedback.style.display = 'none';
+
+        try {
+            const res = await fetchWithAuth('/api/sleep', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    sleepDate: dateInput.value,
+                    bedtime: bedtimeInput.value,
+                    wakeTime: wakeTimeInput.value,
+                    sleepQuality: qualitySelect.value,
+                    notes: notesInput.value
+                })
+            });
+
+            if (res.ok) {
+                feedback.textContent = 'Sleep record saved successfully!';
+                feedback.style.color = '#10b981';
+                feedback.style.display = 'block';
+                
+                // Clear form except date
+                bedtimeInput.value = '';
+                wakeTimeInput.value = '';
+                qualitySelect.value = '';
+                notesInput.value = '';
+
+                // Reload history
+                window.loadSleepHistory();
+            } else {
+                const data = await res.json();
+                feedback.textContent = data.error || 'Failed to save sleep record.';
+                feedback.style.color = '#ef4444';
+                feedback.style.display = 'block';
+            }
+        } catch (err) {
+            console.error('Error saving sleep:', err);
+            feedback.textContent = 'An error occurred while saving.';
+            feedback.style.color = '#ef4444';
+            feedback.style.display = 'block';
+        } finally {
+            spinner.style.display = 'none';
+            btnText.textContent = 'Save Sleep';
+        }
+    };
+
+    // Load Sleep History
+    window.loadSleepHistory = async function() {
+        const container = document.getElementById('sleepHistoryContainer');
+        if (!container) return;
+
+        try {
+            const res = await fetchWithAuth('/api/sleep/history');
+            if (!res.ok) throw new Error('Failed to fetch sleep history');
+            
+            const history = await res.json();
+
+            if (history.length === 0) {
+                container.innerHTML = '<p style="color:var(--text-muted);">No sleep records yet.</p>';
+                return;
+            }
+
+            let html = `
+                <table style="width:100%; border-collapse:collapse; font-size:14px; text-align:left;">
+                    <thead>
+                        <tr style="border-bottom:2px solid var(--border-color); color:var(--text-muted);">
+                            <th style="padding:12px 8px;">Date</th>
+                            <th style="padding:12px 8px;">Bedtime</th>
+                            <th style="padding:12px 8px;">Wake-up</th>
+                            <th style="padding:12px 8px;">Duration</th>
+                            <th style="padding:12px 8px;">Quality</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+            `;
+
+            history.forEach(item => {
+                const dateStr = new Date(item.sleep_date).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: '2-digit' });
+                
+                // Format time to AM/PM for better readability
+                const formatTime = (timeStr) => {
+                    const [h, m] = timeStr.split(':');
+                    const d = new Date();
+                    d.setHours(h, m, 0);
+                    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                };
+
+                let qColor = "var(--text-dark)";
+                if (item.sleep_quality === 'Very Poor') qColor = "#ef4444";
+                if (item.sleep_quality === 'Poor') qColor = "#f97316";
+                if (item.sleep_quality === 'Average') qColor = "#f59e0b";
+                if (item.sleep_quality === 'Good') qColor = "#10b981";
+                if (item.sleep_quality === 'Excellent') qColor = "#3b82f6";
+
+                html += `
+                    <tr style="border-bottom:1px solid var(--border-color);">
+                        <td style="padding:12px 8px; font-weight:600;">${dateStr}</td>
+                        <td style="padding:12px 8px;">${formatTime(item.bedtime)}</td>
+                        <td style="padding:12px 8px;">${formatTime(item.wake_time)}</td>
+                        <td style="padding:12px 8px; font-weight:700;">${item.formatted_duration}</td>
+                        <td style="padding:12px 8px; color:${qColor}; font-weight:600;">${item.sleep_quality}</td>
+                    </tr>
+                `;
+            });
+
+            html += `
+                    </tbody>
+                </table>
+            `;
+
+            container.innerHTML = html;
+        } catch (err) {
+            console.error('Error loading sleep history:', err);
+            container.innerHTML = '<p style="color:#ef4444;">Error loading history.</p>';
+        }
+    };
+
+    // Hook into showSection to load data when sleep section is opened
+    const originalShowSection = window.showSection;
+    if (typeof originalShowSection === 'function') {
+        window.showSection = function(sectionId) {
+            originalShowSection(sectionId);
+            if (sectionId === '#sleep') {
+                // Set today's date automatically if empty
+                const dateInput = document.getElementById('sleepDate');
+                if (dateInput && !dateInput.value) {
+                    const today = new Date();
+                    const yyyy = today.getFullYear();
+                    const mm = String(today.getMonth() + 1).padStart(2, '0');
+                    const dd = String(today.getDate()).padStart(2, '0');
+                    dateInput.value = `${yyyy}-${mm}-${dd}`;
+                }
+                
+                if (typeof window.loadSleepHistory === 'function') {
+                    window.loadSleepHistory();
+                }
+            }
+        };
+    }
+})();
+
+/* =====================================================
+   ADMIN DASHBOARD — FRONTEND INTEGRATION
+===================================================== */
+(function() {
+    let adminCurrentPage = 1;
+    let adminTotalPages = 1;
+    const fetchWithAuth = window.fetchWithAuth || async function(url, options = {}) {
+        const token = typeof getToken === 'function' ? getToken() : (localStorage.getItem("innerVoiceToken") || null);
+        const baseUrl = typeof BACKEND_URL !== 'undefined' ? BACKEND_URL : "http://localhost:5000";
+        const fullUrl = url.startsWith("http") ? url : baseUrl + url;
+        const headers = {
+            "Content-Type": "application/json",
+            ...(options.headers || {})
+        };
+        if (token) {
+            headers["Authorization"] = "Bearer " + token;
+        }
+        return fetch(fullUrl, { ...options, headers });
+    };
+
+    // Helper to safely escape HTML strings
+    function escapeHtml(str) {
+        if (!str) return '';
+        return String(str)
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#039;");
+    }
+
+    // Check user role on startup / login to show/hide Admin link in sidebar
+    window.checkAdminRoleNav = function() {
+        const adminNavLink = document.getElementById('adminNavLink');
+        if (!adminNavLink) return;
+
+        let role = (window.currentUser && window.currentUser.role) ? window.currentUser.role : localStorage.getItem('user_role');
+
+        if (!role) {
+            try {
+                const savedUser = JSON.parse(localStorage.getItem('innerVoiceCurrentUser'));
+                if (savedUser && savedUser.role) {
+                    role = savedUser.role;
+                }
+            } catch (e) {}
+        }
+
+        if (!role) {
+            try {
+                const token = localStorage.getItem('innerVoiceToken');
+                if (token) {
+                    const parts = token.split('.');
+                    if (parts.length >= 2) {
+                        const base64Url = parts[1];
+                        const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+                        const jsonPayload = decodeURIComponent(atob(base64).split('').map(function(c) {
+                            return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
+                        }).join(''));
+                        const payload = JSON.parse(jsonPayload);
+                        if (payload && payload.role) {
+                            role = payload.role;
+                        }
+                    }
+                }
+            } catch (e) {}
+        }
+
+        if (role === 'admin') {
+            adminNavLink.style.setProperty('display', 'flex', 'important');
+            adminNavLink.style.setProperty('visibility', 'visible', 'important');
+            adminNavLink.style.setProperty('opacity', '1', 'important');
+        } else {
+            adminNavLink.style.setProperty('display', 'none', 'important');
+        }
+    };
+
+    // Immediately execute checkAdminRoleNav on definition
+    try { window.checkAdminRoleNav(); } catch(e) {}
+
+    // Load Admin Stats Overview
+    window.loadAdminDashboard = async function() {
+        try {
+            const res = await fetchWithAuth('/api/admin/stats');
+            if (!res.ok) {
+                if (res.status === 403) {
+                    alert('Access denied: Admin authorization required.');
+                }
+                return;
+            }
+
+            const data = await res.json();
+            if (!data.success || !data.stats) return;
+
+            const { users, activity } = data.stats;
+
+            // Update Users Stat Card
+            const totalUsersEl = document.getElementById('adminStatTotalUsers');
+            const userBreakdownEl = document.getElementById('adminStatUserBreakdown');
+            if (totalUsersEl) totalUsersEl.textContent = users.total.toLocaleString();
+            if (userBreakdownEl) userBreakdownEl.textContent = `${users.admins} Admins | ${users.regular} Regular Users`;
+
+            // Update Moods Stat Card
+            const totalMoodsEl = document.getElementById('adminStatTotalMoods');
+            if (totalMoodsEl) totalMoodsEl.textContent = activity.totalMoods.toLocaleString();
+
+            // Update Journals Stat Card
+            const totalJournalsEl = document.getElementById('adminStatTotalJournals');
+            const reflectionsEl = document.getElementById('adminStatReflections');
+            if (totalJournalsEl) totalJournalsEl.textContent = (activity.totalJournals + activity.totalReflections).toLocaleString();
+            if (reflectionsEl) reflectionsEl.textContent = `${activity.totalJournals} Journals, ${activity.totalReflections} Reflections`;
+
+            // Update Goals Stat Card
+            const totalGoalsEl = document.getElementById('adminStatTotalGoals');
+            const goalsCompletedEl = document.getElementById('adminStatGoalsCompleted');
+            if (totalGoalsEl) totalGoalsEl.textContent = activity.totalGoals.toLocaleString();
+            if (goalsCompletedEl) goalsCompletedEl.textContent = `✓ ${activity.completedGoals} Completed Goals`;
+
+            // Update Sleep & Assessments Stat Card
+            const totalSleepEl = document.getElementById('adminStatTotalSleep');
+            const assessmentsEl = document.getElementById('adminStatAssessments');
+            if (totalSleepEl) totalSleepEl.textContent = (activity.totalSleep + activity.totalAssessments).toLocaleString();
+            if (assessmentsEl) assessmentsEl.textContent = `${activity.totalSleep} Sleep Logs | ${activity.totalAssessments} Tests`;
+        } catch (err) {
+            console.error('Error loading admin dashboard stats:', err);
+        }
+    };
+
+    // Load Paginated Users Directory
+    window.loadAdminUsers = async function(page = 1) {
+        adminCurrentPage = page;
+        const tbody = document.getElementById('adminUsersTableBody');
+        const searchInput = document.getElementById('adminUserSearchInput');
+        const search = searchInput ? searchInput.value.trim() : '';
+
+        if (tbody) {
+            tbody.innerHTML = '<tr><td colspan="6" style="text-align:center; padding:24px; color:var(--text-muted);">Loading users...</td></tr>';
+        }
+
+        try {
+            const queryParams = new URLSearchParams({ page: adminCurrentPage, limit: 15 });
+            if (search) queryParams.set('search', search);
+
+            const res = await fetchWithAuth(`/api/admin/users?${queryParams.toString()}`);
+            if (!res.ok) throw new Error('Failed to load users directory');
+
+            const data = await res.json();
+            if (!data.success) return;
+
+            const users = data.users || [];
+            const pagination = data.pagination || { total: 0, totalPages: 1, page: 1 };
+            adminTotalPages = pagination.totalPages;
+
+            // Render table rows
+            if (users.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="6" style="text-align:center; padding:24px; color:var(--text-muted);">No users found.</td></tr>';
+            } else {
+                tbody.innerHTML = users.map(user => {
+                    const joinedDate = new Date(user.created_at).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: '2-digit' });
+                    const roleBadge = user.role === 'admin'
+                        ? '<span style="background:#fee2e2; color:#dc2626; font-size:11px; font-weight:700; padding:2px 8px; border-radius:10px;">ADMIN</span>'
+                        : '<span style="background:#f3f4f6; color:#4b5563; font-size:11px; font-weight:600; padding:2px 8px; border-radius:10px;">USER</span>';
+
+                    return `
+                        <tr style="border-bottom:1px solid var(--border-color);">
+                            <td style="padding:12px 10px; font-weight:700; color:var(--text-muted);">#${user.id}</td>
+                            <td style="padding:12px 10px;">
+                                <div style="font-weight:700; color:var(--text-dark);">${escapeHtml(user.name || 'Anonymous')}</div>
+                                <div style="font-size:12px; color:var(--text-muted);">${escapeHtml(user.email)}</div>
+                            </td>
+                            <td style="padding:12px 10px;">${roleBadge}</td>
+                            <td style="padding:12px 10px; font-size:13px;">
+                                ⚡ ${user.streak || 0}d streak | ${user.xp || 0} XP (Lvl ${user.level || 1})
+                            </td>
+                            <td style="padding:12px 10px; font-size:13px; color:var(--text-muted);">${joinedDate}</td>
+                            <td style="padding:12px 10px; text-align:center; white-space:nowrap;">
+                                <button type="button" class="iv-btn iv-btn-secondary" onclick="viewAdminUserDetail(${user.id})" style="padding:4px 10px; font-size:12px; margin-right:4px;">
+                                    🔍 Detail
+                                </button>
+                                <button type="button" class="iv-btn" onclick="deleteAdminUser(${user.id}, '${escapeHtml(user.name)}')" style="padding:4px 10px; font-size:12px; background:#fee2e2; color:#dc2626; border:none; border-radius:6px; cursor:pointer;">
+                                    🗑️ Delete
+                                </button>
+                            </td>
+                        </tr>
+                    `;
+                }).join('');
+            }
+
+            // Update Pagination UI
+            const pagInfo = document.getElementById('adminPaginationInfo');
+            const prevBtn = document.getElementById('adminPrevPageBtn');
+            const nextBtn = document.getElementById('adminNextPageBtn');
+
+            if (pagInfo) pagInfo.textContent = `Showing Page ${adminCurrentPage} of ${adminTotalPages} (${pagination.total} Total Users)`;
+            if (prevBtn) prevBtn.disabled = adminCurrentPage <= 1;
+            if (nextBtn) nextBtn.disabled = adminCurrentPage >= adminTotalPages;
+
+        } catch (err) {
+            console.error('Error loading admin users:', err);
+            if (tbody) tbody.innerHTML = '<tr><td colspan="6" style="text-align:center; padding:24px; color:#ef4444;">Error loading users.</td></tr>';
+        }
+    };
+
+    // Change Pagination Page
+    window.changeAdminPage = function(delta) {
+        const newPage = adminCurrentPage + delta;
+        if (newPage >= 1 && newPage <= adminTotalPages) {
+            window.loadAdminUsers(newPage);
+        }
+    };
+
+    // View Single User Detail Modal
+    window.viewAdminUserDetail = async function(userId) {
+        const modal = document.getElementById('adminUserDetailModal');
+        const content = document.getElementById('adminUserDetailContent');
+        if (!modal || !content) return;
+
+        modal.style.display = 'flex';
+        content.innerHTML = '<p style="color:var(--text-muted); text-align:center; padding:20px;">Loading user activity details...</p>';
+
+        try {
+            const res = await fetchWithAuth(`/api/admin/users/${userId}`);
+            if (!res.ok) throw new Error('Failed to fetch user details');
+
+            const data = await res.json();
+            if (!data.success || !data.user) return;
+
+            const { user, activity, recentMoods } = data;
+            const joinedDate = new Date(user.created_at).toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' });
+
+            let html = `
+                <div style="background:#f9fafb; padding:16px; border-radius:12px; margin-bottom:20px; text-align:left;">
+                    <div style="display:flex; justify-content:space-between; align-items:flex-start;">
+                        <div>
+                            <h4 style="font-size:18px; font-weight:800; color:var(--text-dark); margin:0 0 4px;">${escapeHtml(user.name)}</h4>
+                            <div style="font-size:13px; color:var(--text-muted);">${escapeHtml(user.email)}</div>
+                        </div>
+                        <span style="background:${user.role === 'admin' ? '#fee2e2' : '#e0e7ff'}; color:${user.role === 'admin' ? '#dc2626' : '#4338ca'}; font-size:11px; font-weight:700; padding:3px 10px; border-radius:12px; text-transform:uppercase;">
+                            ${user.role}
+                        </span>
+                    </div>
+                    <hr style="border:none; border-top:1px solid #e5e7eb; margin:12px 0;" />
+                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; font-size:13px;">
+                        <div><strong>Joined:</strong> ${joinedDate}</div>
+                        <div><strong>Streak:</strong> 🔥 ${user.streak || 0} Days</div>
+                        <div><strong>XP / Level:</strong> ✨ ${user.xp || 0} XP (Lvl ${user.level || 1})</div>
+                        <div><strong>Email Verified:</strong> ${user.email_verified ? '✅ Yes' : '❌ No'}</div>
+                    </div>
+                </div>
+
+                <h4 style="font-size:15px; font-weight:700; color:var(--text-dark); margin:0 0 12px; text-align:left;">📊 Lifetime Activity Breakdown</h4>
+                <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; font-size:13px; text-align:left; margin-bottom:20px;">
+                    <div style="background:#fff; border:1px solid #e5e7eb; padding:10px 14px; border-radius:8px;">💭 <strong>Mood Entries:</strong> ${activity.moodCount}</div>
+                    <div style="background:#fff; border:1px solid #e5e7eb; padding:10px 14px; border-radius:8px;">📝 <strong>Journals:</strong> ${activity.journalCount}</div>
+                    <div style="background:#fff; border:1px solid #e5e7eb; padding:10px 14px; border-radius:8px;">✨ <strong>Reflections:</strong> ${activity.reflectionCount}</div>
+                    <div style="background:#fff; border:1px solid #e5e7eb; padding:10px 14px; border-radius:8px;">🎯 <strong>Goals (Completed):</strong> ${activity.goalCount} (${activity.completedGoalCount})</div>
+                    <div style="background:#fff; border:1px solid #e5e7eb; padding:10px 14px; border-radius:8px;">😴 <strong>Sleep Logs:</strong> ${activity.sleepCount}</div>
+                    <div style="background:#fff; border:1px solid #e5e7eb; padding:10px 14px; border-radius:8px;">🧪 <strong>Wellness Tests:</strong> ${activity.assessmentCount}</div>
+                </div>
+            `;
+
+            if (recentMoods && recentMoods.length > 0) {
+                html += `
+                    <h4 style="font-size:15px; font-weight:700; color:var(--text-dark); margin:0 0 8px; text-align:left;">Recent Mood Logs</h4>
+                    <div style="display:flex; flex-direction:column; gap:6px; font-size:13px; text-align:left;">
+                        ${recentMoods.map(m => `
+                            <div style="display:flex; justify-content:space-between; background:#fff; border:1px solid #f3f4f6; padding:8px 12px; border-radius:6px;">
+                                <span>${m.mood}</span>
+                                <span style="color:var(--text-muted); font-size:12px;">${m.mood_date ? new Date(m.mood_date).toLocaleDateString() : ''}</span>
+                            </div>
+                        `).join('')}
+                    </div>
+                `;
+            }
+
+            content.innerHTML = html;
+        } catch (err) {
+            console.error('Error viewing admin user detail:', err);
+            content.innerHTML = '<p style="color:#ef4444;">Failed to load user details.</p>';
+        }
+    };
+
+    // Close User Detail Modal
+    window.closeAdminUserModal = function() {
+        const modal = document.getElementById('adminUserDetailModal');
+        if (modal) modal.style.display = 'none';
+    };
+
+    // Delete User with Guarded Confirmation
+    window.deleteAdminUser = async function(userId, userName) {
+        const confirmMsg = `⚠️ ARE YOU SURE?\n\nThis will permanently delete the user "${userName}" (ID: ${userId}) and CASCADE DELETE all their data (moods, journals, goals, sleep records, assessments).\n\nThis action CANNOT be undone.`;
+        if (!confirm(confirmMsg)) return;
+
+        try {
+            const res = await fetchWithAuth(`/api/admin/users/${userId}?confirm=true`, {
+                method: 'DELETE'
+            });
+
+            const data = await res.json();
+
+            if (!res.ok || !data.success) {
+                alert(data.message || 'Failed to delete user.');
+                return;
+            }
+
+            alert(`✅ Success: ${data.message}`);
+            window.loadAdminUsers(adminCurrentPage);
+            window.loadAdminDashboard();
+        } catch (err) {
+            console.error('Error deleting user:', err);
+            alert('Server error while deleting user.');
+        }
+    };
+
+    // Hook into window.showSection to trigger load on opening #admin section
+    const prevShowSection = window.showSection;
+    if (typeof prevShowSection === 'function') {
+        window.showSection = function(sectionId) {
+            prevShowSection(sectionId);
+            if (typeof window.checkAdminRoleNav === 'function') {
+                window.checkAdminRoleNav();
+            }
+            if (sectionId === '#admin' || sectionId === 'admin') {
+                if (typeof window.loadAdminDashboard === 'function') window.loadAdminDashboard();
+                if (typeof window.loadAdminUsers === 'function') window.loadAdminUsers(1);
+            }
+        };
+    }
+
+    // Run check on DOM load or immediately if already loaded
+    function initAdminNavAndDashboard() {
+        if (typeof window.checkAdminRoleNav === 'function') {
+            window.checkAdminRoleNav();
+        }
+        if (window.location.hash === '#admin' || window.location.hash === 'admin') {
+            if (typeof window.loadAdminDashboard === 'function') window.loadAdminDashboard();
+            if (typeof window.loadAdminUsers === 'function') window.loadAdminUsers(1);
+        }
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', initAdminNavAndDashboard);
+    } else {
+        initAdminNavAndDashboard();
+    }
+})();
+
+
+
+/* =====================================================
+   EIGHTH SCHEDULE (22 OFFICIAL LANGUAGES OF INDIA) + ENGLISH
+   COMPREHENSIVE UI TRANSLATION DICTIONARY & I18N SYSTEM
+===================================================== */
+(function() {
+    const UI_TRANSLATIONS = {
+        "en": {
+            "sidebar_dashboard": "🏠 Dashboard",
+            "sidebar_mood": "💭 Mood Tracker",
+            "sidebar_analytics": "📊 Analytics",
+            "sidebar_journal": "📝 Personal Journal",
+            "sidebar_reflection": "✨ Reflections",
+            "sidebar_voice_journal": "🎤 Voice Journal",
+            "sidebar_daily_plan": "🌱 Daily Plan",
+            "sidebar_goals": "🎯 Goals",
+            "sidebar_sleep": "😴 Sleep Tracker",
+            "sidebar_smart_insights": "💡 Smart Insights",
+            "sidebar_ai_insights": "🧠 AI Insights",
+            "sidebar_assessment": "🧪 Mental Assessment",
+            "sidebar_chatbot": "🤖 AI Chatbot",
+            "sidebar_achievements": "🏆 Achievements",
+            "sidebar_focus": "⏱️ Focus Sessions",
+            "sidebar_resources": "🌿 Resources (Meditation/Music)",
+            "sidebar_profile": "⚙️ Settings & Profile",
+            "sidebar_admin": "🛡️ Admin Panel",
+            "sidebar_emergency": "🆘 Emergency Help",
+            "topbar_greeting": "Good Morning 🌿",
+            "topbar_sub": "How are you feeling today?",
+            "chat_welcome_title": "Hi there! I'm your INNERVOICE AI companion. 🌿",
+            "chat_welcome_desc": "Type a message below or click a quick prompt to start our conversation.",
+            "chat_placeholder": "Type what is on your mind..."
+        },
+        "hi": {
+            "sidebar_dashboard": "🏠 डैशबोर्ड",
+            "sidebar_mood": "💭 मूड ट्रैकर",
+            "sidebar_analytics": "📊 विश्लेषण",
+            "sidebar_journal": "📝 व्यक्तिगत जर्नल",
+            "sidebar_reflection": "✨ विचार (Reflections)",
+            "sidebar_voice_journal": "🎤 वॉइस जर्नल",
+            "sidebar_daily_plan": "🌱 दैनिक योजना",
+            "sidebar_goals": "🎯 लक्ष्य (Goals)",
+            "sidebar_sleep": "😴 नींद ट्रैकर",
+            "sidebar_smart_insights": "💡 स्मार्ट अंतर्दृष्टि",
+            "sidebar_ai_insights": "🧠 एआई अंतर्दृष्टि",
+            "sidebar_assessment": "🧪 मानसिक मूल्यांकन",
+            "sidebar_chatbot": "🤖 एआई चैटबॉट",
+            "sidebar_achievements": "🏆 उपलब्धियां",
+            "sidebar_focus": "⏱️ फोकस सत्र",
+            "sidebar_resources": "🌿 संसाधन (ध्यान/संगीत)",
+            "sidebar_profile": "⚙️ सेटिंग्स और प्रोफ़ाइल",
+            "sidebar_admin": "🛡️ एडमिन पैनल",
+            "sidebar_emergency": "🆘 आपातकालीन सहायता",
+            "topbar_greeting": "नमस्ते 🌿",
+            "topbar_sub": "आज आप कैसा महसूस कर रहे हैं?",
+            "chat_welcome_title": "नमस्ते! मैं आपका इनरवाइस एआई साथी हूँ। 🌿",
+            "chat_welcome_desc": "अपनी बात साझा करने के लिए नीचे संदेश लिखें।",
+            "chat_placeholder": "अपने मन की बात लिखें..."
+        },
+        "mr": {
+            "sidebar_dashboard": "🏠 डॅशबोर्ड",
+            "sidebar_mood": "💭 मूड ट्रॅकर",
+            "sidebar_analytics": "📊 विश्लेषण",
+            "sidebar_journal": "📝 वैयक्तिक जर्नल",
+            "sidebar_reflection": "✨ विचार",
+            "sidebar_voice_journal": "🎤 व्हॉइस जर्नल",
+            "sidebar_daily_plan": "🌱 दैनंदिन नियोजन",
+            "sidebar_goals": "🎯 ध्येय (Goals)",
+            "sidebar_sleep": "😴 झोप ट्रॅकर",
+            "sidebar_smart_insights": "💡 स्मार्ट इनसाईट्स",
+            "sidebar_ai_insights": "🧠 AI इनसाईट्स",
+            "sidebar_assessment": "🧪 मानसिक मूल्यमापन",
+            "sidebar_chatbot": "🤖 AI चॅटबॉट",
+            "sidebar_achievements": "🏆 यश/प्राप्ती",
+            "sidebar_focus": "⏱️ फोकस सत्र",
+            "sidebar_resources": "🌿 संसाधने (ध्यान/संगीत)",
+            "sidebar_profile": "⚙️ सेटिंग्ज आणि प्रोफाइल",
+            "sidebar_admin": "🛡️ ॲडमिन पॅनेल",
+            "sidebar_emergency": "🆘 आपत्कालीन मदत",
+            "topbar_greeting": "शुभ प्रभात 🌿",
+            "topbar_sub": "आज तुम्हाला कसे वाटत आहे?",
+            "chat_welcome_title": "नमस्कार! मी तुमचा INNERVOICE AI मित्र आहे. 🌿",
+            "chat_welcome_desc": "संभाषण सुरू करण्यासाठी खाली संदेश टाइप करा.",
+            "chat_placeholder": "तुमच्या मनात काय आहे ते लिहा..."
+        },
+        "bn": {
+            "sidebar_dashboard": "🏠 ড্যাশবোর্ড",
+            "sidebar_mood": "💭 মুড ট্র্যাকার",
+            "sidebar_analytics": "📊 অ্যানালিটিক্স",
+            "sidebar_journal": "📝 ব্যক্তিগত জার্নাল",
+            "sidebar_reflection": "✨ রিফ্লেকশন",
+            "sidebar_voice_journal": "🎤 ভয়েস জার্নাল",
+            "sidebar_daily_plan": "🌱 দৈনন্দিন পরিকল্পনা",
+            "sidebar_goals": "🎯 লক্ষ্য",
+            "sidebar_sleep": "😴 ঘুম ট্র্যাকার",
+            "sidebar_smart_insights": "💡 স্মার্ট ইনসাইট",
+            "sidebar_ai_insights": "🧠 এআই ইনসাইট",
+            "sidebar_assessment": "🧪 মানসিক মূল্যায়ন",
+            "sidebar_chatbot": "🤖 এআই চ্যাটবট",
+            "sidebar_achievements": "🏆 অর্জন",
+            "sidebar_focus": "⏱️ ফোকাস সেশন",
+            "sidebar_resources": "🌿 রিসোর্স (ধ্যান/সঙ্গীত)",
+            "sidebar_profile": "⚙️ সেটিংসে ও প্রোফাইল",
+            "sidebar_admin": "🛡️ এডমিন প্যানেল",
+            "sidebar_emergency": "🆘 জরুরি সহায়তা",
+            "topbar_greeting": "শুভ সকাল 🌿",
+            "topbar_sub": "আজ আপনার কেমন লাগছে?",
+            "chat_welcome_title": "নমস্কার! আমি আপনার ইন ভয়েস এআই সাথী। 🌿",
+            "chat_welcome_desc": "কথোপকথন শুরু করতে নিচে বার্তা লিখুন।",
+            "chat_placeholder": "আপনার মনের কথা লিখুন..."
+        },
+        "ta": {
+            "sidebar_dashboard": "🏠 முகப்புப் பலகை",
+            "sidebar_mood": "💭 மனநிலை கண்காணிப்பு",
+            "sidebar_analytics": "📊 பகுப்பாய்வு",
+            "sidebar_journal": "📝 தனிப்பட்ட டைரி",
+            "sidebar_reflection": "✨ சிந்தனைகள்",
+            "sidebar_voice_journal": "🎤 குரல் டைரி",
+            "sidebar_daily_plan": "🌱 தினசரி திட்டம்",
+            "sidebar_goals": "🎯 இலக்குகள்",
+            "sidebar_sleep": "😴 தூக்க கண்காணிப்பு",
+            "sidebar_smart_insights": "💡 ஸ்மார்ட் நுண்ணறிவு",
+            "sidebar_ai_insights": "🧠 AI நுண்ணறிவு",
+            "sidebar_assessment": "🧪 மனநல மதிப்பீடு",
+            "sidebar_chatbot": "🤖 AI சேட்பாட்",
+            "sidebar_achievements": "🏆 சாதனைகள்",
+            "sidebar_focus": "⏱️ கவனம் அமர்வுகள்",
+            "sidebar_resources": "🌿 வளங்கள் (தியானம்/இசை)",
+            "sidebar_profile": "⚙️ அமைப்புகள் & சுயவிவரம்",
+            "sidebar_admin": "🛡️ நிர்வாகக் குழு",
+            "sidebar_emergency": "🆘 அவசர உதவி",
+            "topbar_greeting": "காலை வணக்கம் 🌿",
+            "topbar_sub": "இன்று நீங்கள் எப்படி உணர்கிறீர்கள்?",
+            "chat_welcome_title": "வணக்கம்! நான் உங்கள் INNERVOICE AI நண்பன். 🌿",
+            "chat_welcome_desc": "பேச்சைத் தொடங்க கீழே தட்டச்சு செய்யவும்.",
+            "chat_placeholder": "உங்கள் மனதை எழும் எண்ணங்களைப் பகிரவும்..."
+        },
+        "te": {
+            "sidebar_dashboard": "🏠 డాష్‌బోర్డ్",
+            "sidebar_mood": "💭 మూడ్ ట్రాకర్",
+            "sidebar_analytics": "📊 విశ్లేషణలు",
+            "sidebar_journal": "📝 వ్యక్తిగత జర్నల్",
+            "sidebar_reflection": "✨ ఆలోచనలు",
+            "sidebar_voice_journal": "🎤 వాయిస్ జర్నల్",
+            "sidebar_daily_plan": "🌱 రోజువారీ ప్రణాళిక",
+            "sidebar_goals": "🎯 లక్ష్యాలు",
+            "sidebar_sleep": "😴 నిద్ర ట్రాకర్",
+            "sidebar_smart_insights": "💡 స్మార్ట్ ఇన్సైట్స్",
+            "sidebar_ai_insights": "🧠 AI ఇన్సైట్స్",
+            "sidebar_assessment": "🧪 మానసిక అంచనా",
+            "sidebar_chatbot": "🤖 AI చాట్‌బాట్",
+            "sidebar_achievements": "🏆 విజయాలు",
+            "sidebar_focus": "⏱️ ఫోకస్ సెషన్‌లు",
+            "sidebar_resources": "🌿 వనరులు (ధ్యానం/సంగీతం)",
+            "sidebar_profile": "⚙️ సెట్టింగ్‌లు & ప్రొఫైల్",
+            "sidebar_admin": "🛡️ అడ్మిన్ ప్యానెల్",
+            "sidebar_emergency": "🆘 అత్యవసర సహాయం",
+            "topbar_greeting": "శుభోదయం 🌿",
+            "topbar_sub": "ఈరోజు మీరు ఎలా భావిస్తున్నారు?",
+            "chat_welcome_title": "నమస్కారం! నేను మీ INNERVOICE AI సహచరుడిని. 🌿",
+            "chat_welcome_desc": "సంభాషణను ప్రారంభించడానికి దిగువన సందేశాన్ని టైప్ చేయండి.",
+            "chat_placeholder": "మీ మనసులోని మాటలను వ్యక్తపరచండి..."
+        },
+        "gu": {
+            "sidebar_dashboard": "🏠 ડેશબોર્ડ",
+            "sidebar_mood": "💭 મૂડ ટ્રેકર",
+            "sidebar_analytics": "📊 એનાલિટિક્સ",
+            "sidebar_journal": "📝 અંગત જર્નલ",
+            "sidebar_reflection": "✨ વિચારો",
+            "sidebar_voice_journal": "🎤 વોઇસ જર્નલ",
+            "sidebar_daily_plan": "🌱 દૈનિક યોજના",
+            "sidebar_goals": "🎯 લક્ષ્યો",
+            "sidebar_sleep": "😴 સ્લીપ ટ્રેકર",
+            "sidebar_smart_insights": "💡 સ્માર્ટ આંતરદ્રષ્ટિ",
+            "sidebar_ai_insights": "🧠 AI આંતરદ્રષ્ટિ",
+            "sidebar_assessment": "🧪 માનસિક મૂલ્યાંકન",
+            "sidebar_chatbot": "🤖 AI ચેટબોટ",
+            "sidebar_achievements": "🏆 સિદ્ધિઓ",
+            "sidebar_focus": "⏱️ ફોકસ સત્રો",
+            "sidebar_resources": "🌿 સંસાધનો (ધ્યાન/સંગીત)",
+            "sidebar_profile": "⚙️ સેટિંગ્સ અને પ્રોફાઇલ",
+            "sidebar_admin": "🛡️ એડમિન પેનલ",
+            "sidebar_emergency": "🆘 કટોકટીની મદદ",
+            "topbar_greeting": "સુપ્રભાત 🌿",
+            "topbar_sub": "આજે તમને કેવું લાગે છે?",
+            "chat_welcome_title": "નમસ્તે! હું તમારો INNERVOICE AI સાથી છું. 🌿",
+            "chat_welcome_desc": "વાતચીત શરૂ કરવા માટે નીચે સંદેશ લખો.",
+            "chat_placeholder": "તમારા મનની વાત લખો..."
+        },
+        "kn": {
+            "sidebar_dashboard": "🏠 ಡ್ಯಾಶ್‌ಬೋರ್ಡ್",
+            "sidebar_mood": "💭 ಮೂಡ್ ಟ್ರ್ಯಾಕರ್",
+            "sidebar_analytics": "📊 ವಿಶ್ಲೇಷಣೆ",
+            "sidebar_journal": "📝 ವೈಯಕ್ತಿಕ ಜರ್ನಲ್",
+            "sidebar_reflection": "✨ ಚಿಂತನೆಗಳು",
+            "sidebar_voice_journal": "🎤 ವಾಯ್ಸ್ ಜರ್ನಲ್",
+            "sidebar_daily_plan": "🌱 ದೈನಂದಿನ ಯೋಜನೆ",
+            "sidebar_goals": "🎯 ಗುರಿಗಳು",
+            "sidebar_sleep": "😴 ನಿದ್ರೆ ಟ್ರ್ಯಾಕರ್",
+            "sidebar_smart_insights": "💡 ಸ್ಮಾರ್ಟ್ ಒಳನೋಟಗಳು",
+            "sidebar_ai_insights": "🧠 AI ಒಳನೋಟಗಳು",
+            "sidebar_assessment": "🧪 ಮಾನಸಿಕ ಮೌಲ್ಯಮಾಪನ",
+            "sidebar_chatbot": "🤖 AI ಚಾಟ್‌ಬಾಟ್",
+            "sidebar_achievements": "🏆 ಸಾಧನೆಗಳು",
+            "sidebar_focus": "⏱️ ಫೋಕಸ್ ಸೆಷನ್‌ಗಳು",
+            "sidebar_resources": "🌿 ಸಂಪನ್ಮೂಲಗಳು (ಧ್ಯಾನ/ಸಂಗೀತ)",
+            "sidebar_profile": "⚙️ ಸೆಟ್ಟಿಂಗ್‌ಗಳು ಮತ್ತು ಪ್ರೊಫೈಲ್",
+            "sidebar_admin": "🛡️ ಅಡ್ಮಿನ್ ಪ್ಯಾನೆಲ್",
+            "sidebar_emergency": "🆘 ತುರ್ತು ನೆರವು",
+            "topbar_greeting": "ಶುಭೋದಯ 🌿",
+            "topbar_sub": "ಇಂದು ನಿಮಗೇನು ಅನಿಸುತ್ತಿದೆ?",
+            "chat_welcome_title": "ನಮಸ್ಕಾರ! ನಾನು ನಿಮ್ಮ INNERVOICE AI ಜೊತೆಗಾರ. 🌿",
+            "chat_welcome_desc": "ಸಂಭಾಷಣೆ ಪ್ರಾರಂಭಿಸಲು ಕೆಳಗೆ ಸಂದೇಶ ಟೈಪ್ ಮಾಡಿ.",
+            "chat_placeholder": "ನಿಮ್ಮ ಮನಸ್ಸಿನಲ್ಲಿರುವುದನ್ನು ಹಂಚಿಕೊಳ್ಳಿ..."
+        },
+        "ml": {
+            "sidebar_dashboard": "🏠 ഡാഷ്‌ബോർഡ്",
+            "sidebar_mood": "💭 മൂഡ് ട്രാക്കർ",
+            "sidebar_analytics": "📊 അനലിറ്റിക്സ്",
+            "sidebar_journal": "📝 വ്യക്തിഗത ജേണൽ",
+            "sidebar_reflection": "✨ ചിന്തകൾ",
+            "sidebar_voice_journal": "🎤 വോയ്‌സ് ജേണൽ",
+            "sidebar_daily_plan": "🌱 പ്രതിദിന പ്ലാൻ",
+            "sidebar_goals": "🎯 ലക്ഷ്യങ്ങൾ",
+            "sidebar_sleep": "😴 ഉറക്ക ട്രാക്കർ",
+            "sidebar_smart_insights": "💡 സ്മാർട്ട് ഇൻസൈറ്റുകൾ",
+            "sidebar_ai_insights": "🧠 AI ഇൻസൈറ്റുകൾ",
+            "sidebar_assessment": "🧪 മാനസിക വിലയിരുത്തൽ",
+            "sidebar_chatbot": "🤖 AI ചാറ്റ്ബോട്ട്",
+            "sidebar_achievements": "🏆 നേട്ടങ്ങൾ",
+            "sidebar_focus": "⏱️ ഫോക്കസ് സെഷനുകൾ",
+            "sidebar_resources": "🌿 വിഭവങ്ങൾ (ധ്യാനം/സംഗീതം)",
+            "sidebar_profile": "⚙️ ക്രമീകരണങ്ങളും പ്രൊഫൈലും",
+            "sidebar_admin": "🛡️ അഡ്മിൻ പാനൽ",
+            "sidebar_emergency": "🆘 അടിയന്തര സഹായം",
+            "topbar_greeting": "സുപ്രഭാതം 🌿",
+            "topbar_sub": "ഇന്ന് നിങ്ങൾക്ക് എങ്ങനെ തോന്നുന്നു?",
+            "chat_welcome_title": "നമസ്കാരം! ഞാൻ നിങ്ങളുടെ INNERVOICE AI സഹായിയാണ്. 🌿",
+            "chat_welcome_desc": "സംഭാഷണം ആരംഭിക്കാൻ താഴെ സന്ദേശം ടൈപ്പ് ചെയ്യുക.",
+            "chat_placeholder": "നിങ്ങളുടെ മനസ്സിലുള്ളത് പങ്കുവെക്കൂ..."
+        },
+        "or": {
+            "sidebar_dashboard": "🏠 ଡ୍ୟାସବୋର୍ଡ",
+            "sidebar_mood": "💭 ମୁଡ୍ ଟ୍ରାକର୍",
+            "sidebar_analytics": "📊 ଆନାଲିଟିକ୍ସ",
+            "sidebar_journal": "📝 ବ୍ୟକ୍ତିଗତ ଜର୍ନାଲ",
+            "sidebar_reflection": "✨ ଚିନ୍ତନ",
+            "sidebar_voice_journal": "🎤 ଭଏସ୍ ଜର୍ନାଲ",
+            "sidebar_daily_plan": "🌱 ଦୈନନ୍ଦିନ ଯୋଜନା",
+            "sidebar_goals": "🎯 ଲକ୍ଷ୍ୟ",
+            "sidebar_sleep": "😴 ନିଦ୍ରା ଟ୍ରାକର୍",
+            "sidebar_smart_insights": "💡 ସ୍ମାର୍ଟ ଇନସାଇଟ୍",
+            "sidebar_ai_insights": "🧠 AI ଇନସାଇଟ୍",
+            "sidebar_assessment": "🧪 ମାନସିକ ମୂଲ୍ୟାଙ୍କନ",
+            "sidebar_chatbot": "🤖 AI ଚାଟବଟ୍",
+            "sidebar_achievements": "🏆 ସଫଳତା",
+            "sidebar_focus": "⏱️ ଫୋକସ୍ ସେସନ୍",
+            "sidebar_resources": "🌿 ସମ୍ବଳ (ଧ୍ୟାନ/ସଙ୍ଗୀତ)",
+            "sidebar_profile": "⚙️ ସେଟିଂସ ଓ ପ୍ରୋଫାଇଲ୍",
+            "sidebar_admin": "🛡️ ଆଡମିନ୍ ପ୍ୟାନେଲ୍",
+            "sidebar_emergency": "🆘 ଆପାତକାଳୀନ ସହାୟତା",
+            "topbar_greeting": "ସୁପ୍ରଭାତ 🌿",
+            "topbar_sub": "ଆଜି ଆପଣ କିପରି ଅନୁଭବ କରୁଛନ୍ତି?",
+            "chat_welcome_title": "ନମସ୍କାର! ମୁଁ ଆପଣଙ୍କର INNERVOICE AI ସାଥୀ। 🌿",
+            "chat_welcome_desc": "କଥାବାର୍ତ୍ତା ଆରମ୍ଭ କରିବା ପାଇଁ ତଳେ ମେସେଜ୍ ଟାଇପ୍ କରନ୍ତୁ।",
+            "chat_placeholder": "ଆପଣଙ୍କ ମନର କଥା ଲେଖନ୍ତୁ..."
+        },
+        "pa": {
+            "sidebar_dashboard": "🏠 ਡੈਸ਼ਬੋਰਡ",
+            "sidebar_mood": "💭 ਮੂਡ ਟ੍ਰੈਕਰ",
+            "sidebar_analytics": "📊 ਵਿਸ਼ਲੇਸ਼ਣ",
+            "sidebar_journal": "📝 ਨਿੱਜੀ ਜਰਨਲ",
+            "sidebar_reflection": "✨ ਵਿਚਾਰ (Reflections)",
+            "sidebar_voice_journal": "🎤 ਵੌਇਸ ਜਰਨਲ",
+            "sidebar_daily_plan": "🌱 ਰੋਜ਼ਾਨਾ ਯੋਜਨਾ",
+            "sidebar_goals": "🎯 ਨਿਸ਼ਾਨੇ (Goals)",
+            "sidebar_sleep": "😴 ਨੀਂਦ ਟ੍ਰੈਕਰ",
+            "sidebar_smart_insights": "💡 ਸਮਾਰਟ ਜਾਣਕਾਰੀ",
+            "sidebar_ai_insights": "🧠 AI ਜਾਣਕਾਰੀ",
+            "sidebar_assessment": "🧪 ਮਾਨਸਿਕ ਮੁਲਾਂਕਣ",
+            "sidebar_chatbot": "🤖 AI ਚੈਟਬੋਟ",
+            "sidebar_achievements": "🏆 ਪ੍ਰਾਪਤੀਆਂ",
+            "sidebar_focus": "⏱️ ਫੋਕਸ ਸੈਸ਼ਨ",
+            "sidebar_resources": "🌿 ਸਰੋਤ (ਧਿਆਨ/ਸੰਗੀਤ)",
+            "sidebar_profile": "⚙️ ਸੈਟਿੰਗਾਂ ਅਤੇ ਪ੍ਰੋਫਾਈਲ",
+            "sidebar_admin": "🛡️ ਐਡਮਿਨ ਪੈਨਲ",
+            "sidebar_emergency": "🆘 ਸੰਕਟਕਾਲੀਨ ਮਦਦ",
+            "topbar_greeting": "ਸਤਿ ਸ਼੍ਰੀ ਅਕਾਲ 🌿",
+            "topbar_sub": "ਅੱਜ ਤੁਸੀਂ ਕਿਵੇਂ ਮਹਿਸੂਸ ਕਰ ਰਹੇ ਹੋ?",
+            "chat_welcome_title": "ਜੀ ਆਇਆਂ ਨੂੰ! ਮੈਂ ਤੁਹਾਡਾ INNERVOICE AI ਸਾਥੀ ਹਾਂ। 🌿",
+            "chat_welcome_desc": "ਗੱਲਬਾਤ ਸ਼ੁਰੂ ਕਰਨ ਲਈ ਹੇਠਾਂ ਸੁਨੇਹਾ ਲਿਖੋ।",
+            "chat_placeholder": "ਆਪਣੇ ਮਨ ਦੀ ਗੱਲ ਲਿਖੋ..."
+        },
+        "ur": {
+            "sidebar_dashboard": "🏠 ڈیش بورڈ",
+            "sidebar_mood": "💭 موڈ ٹریکر",
+            "sidebar_analytics": "📊 تجزیہ",
+            "sidebar_journal": "📝 ذاتی ڈائری",
+            "sidebar_reflection": "✨ افکار",
+            "sidebar_voice_journal": "🎤 وائس ڈائری",
+            "sidebar_daily_plan": "🌱 روزانہ کا منصوبہ",
+            "sidebar_goals": "🎯 مقاصد",
+            "sidebar_sleep": "😴 نیند کا ٹریکر",
+            "sidebar_smart_insights": "💡 سمارٹ بصیرت",
+            "sidebar_ai_insights": "🧠 AI بصیرت",
+            "sidebar_assessment": "🧪 ذہنی صحت کا جائزہ",
+            "sidebar_chatbot": "🤖 AI چیٹ بوٹ",
+            "sidebar_achievements": "🏆 کامیابیاں",
+            "sidebar_focus": "⏱️ فوکس سیشن",
+            "sidebar_resources": "🌿 وسائل (مراقبہ/موسیقی)",
+            "sidebar_profile": "⚙️ ترتیبات اور پروفائل",
+            "sidebar_admin": "🛡️ ایڈمن پینل",
+            "sidebar_emergency": "🆘 ہنگامی امداد",
+            "topbar_greeting": "صبح بخیر 🌿",
+            "topbar_sub": "آج آپ کیسا محسوس کر رہے ہیں؟",
+            "chat_welcome_title": "خوش آمدید! میں آپ کا INNERVOICE AI ساتھی ہوں۔ 🌿",
+            "chat_welcome_desc": "بات چیت شروع کرنے کے لیے نیچے پیغام ٹائپ کریں۔",
+            "chat_placeholder": "اپنے دل کی بات لکھیں..."
+        },
+        "as": {
+            "sidebar_dashboard": "🏠 ড্যাশবৰ্ড",
+            "sidebar_mood": "💭 মুড ট্ৰেকাৰ",
+            "sidebar_analytics": "📊 বিশ্লেষণ",
+            "sidebar_journal": "📝 ব্যক্তিগত জাৰ্নেল",
+            "sidebar_reflection": "✨ চিন্তা-ভাৱনা",
+            "sidebar_voice_journal": "🎤 ভয়েচ জাৰ্নেল",
+            "sidebar_daily_plan": "🌱 দৈনন্দিন পৰিকল্পনা",
+            "sidebar_goals": "🎯 লক্ষ্য",
+            "sidebar_sleep": "😴 টোপনি ট্ৰেকাৰ",
+            "sidebar_smart_insights": "💡 স্মাৰ্ট অন্তৰ্দৃষ্টি",
+            "sidebar_ai_insights": "🧠 এআই অন্তৰ্দৃষ্টি",
+            "sidebar_assessment": "🧪 মানসিক মূল্যাংকন",
+            "sidebar_chatbot": "🤖 এআই চেটবট",
+            "sidebar_achievements": "🏆 সফলতা",
+            "sidebar_focus": "⏱️ ফ'কাছ ছেচন",
+            "sidebar_resources": "🌿 সম্পদ (ধ্যান/সংগীত)",
+            "sidebar_profile": "⚙️ ছেটিংছ আৰু প্ৰফাইল",
+            "sidebar_admin": "🛡️ এডমিন পেনেল",
+            "sidebar_emergency": "🆘 জৰুৰীকালীন সহায়",
+            "topbar_greeting": "সুপ্ৰভাত 🌿",
+            "topbar_sub": "আজি আপোনাৰ কেনেকুৱা অনুভৱ হৈছে?",
+            "chat_welcome_title": "নমস্কাৰ! মই আপোনাৰ INNERVOICE AI সংগী। 🌿",
+            "chat_welcome_desc": "কথা আৰম্ভ কৰিবলৈ তলত বাৰ্তা টাইপ কৰক।",
+            "chat_placeholder": "আপোনাৰ মনৰ কথা লিখক..."
+        },
+        "sa": {
+            "sidebar_dashboard": "🏠 פलकम् (Dashboard)",
+            "sidebar_mood": "💭 मनोभाव अन्वेषकः",
+            "sidebar_analytics": "📊 विश्लेषणम्",
+            "sidebar_journal": "📝 व्यक्तिगत दैनिकी",
+            "sidebar_reflection": "✨ विचार-विमर्शः",
+            "sidebar_voice_journal": "🎤 वाणि दैनिकी",
+            "sidebar_daily_plan": "🌱 दैनिक योजना",
+            "sidebar_goals": "🎯 लक्ष्याणि",
+            "sidebar_sleep": "😴 निद्रा अन्वेषकः",
+            "sidebar_smart_insights": "💡 सूक्ष्मानुदृष्टिः",
+            "sidebar_ai_insights": "🧠 AI अनुदृष्टिः",
+            "sidebar_assessment": "🧪 मानसमूल्यांकनम्",
+            "sidebar_chatbot": "🤖 AI संवादमित्रम्",
+            "sidebar_achievements": "🏆 सिद्ध्यः",
+            "sidebar_focus": "⏱️ ध्यानसत्रम्",
+            "sidebar_resources": "🌿 साधनानि (ध्यानम्/सङ्गीतम्)",
+            "sidebar_profile": "⚙️ विन्यासाः विवरणञ्च",
+            "sidebar_admin": "🛡️ प्रबन्धकपटलम्",
+            "sidebar_emergency": "🆘 आपत्कालीनसहायता",
+            "topbar_greeting": "सुप्रभातम् 🌿",
+            "topbar_sub": "अद्य भवान् / भवती कथम् अनुभवति?",
+            "chat_welcome_title": "नमो नमः! अहम् तव INNERVOICE AI मित्रम् अस्मि। 🌿",
+            "chat_welcome_desc": "संभाषणाय अधः संदेशम् लिखतु।",
+            "chat_placeholder": "तव मनसि किं वर्तते लिखतु..."
+        },
+        "ne": {
+            "sidebar_dashboard": "🏠 ड्यासबोर्ड",
+            "sidebar_mood": "💭 मुड ट्र्याकर",
+            "sidebar_analytics": "📊 विश्लेषण",
+            "sidebar_journal": "📝 व्यक्तिगत जर्नल",
+            "sidebar_reflection": "✨ विचारहरू",
+            "sidebar_voice_journal": "🎤 भ्वाइस जर्नल",
+            "sidebar_daily_plan": "🌱 दैनिक योजना",
+            "sidebar_goals": "🎯 लक्ष्यहरू",
+            "sidebar_sleep": "😴 निद्रा ट्र्याकर",
+            "sidebar_smart_insights": "💡 स्मार्ट अन्तरदृष्टि",
+            "sidebar_ai_insights": "🧠 AI अन्तरदृष्टि",
+            "sidebar_assessment": "🧪 मानसिक मूल्याङ्कन",
+            "sidebar_chatbot": "🤖 AI च्याटबोट",
+            "sidebar_achievements": "🏆 उपलब्धिहरू",
+            "sidebar_focus": "⏱️ फोकस सत्र",
+            "sidebar_resources": "🌿 स्रोतहरू (ध्यान/सङ्गीत)",
+            "sidebar_profile": "⚙️ सेटिङहरू र प्रोफाइल",
+            "sidebar_admin": "🛡️ एडमिन प्यानल",
+            "sidebar_emergency": "🆘 आपत्कालीन सहायता",
+            "topbar_greeting": "शुभ प्रभात 🌿",
+            "topbar_sub": "आज तपाईंलाई कस्तो महसुस भइरहेको छ?",
+            "chat_welcome_title": "नमस्ते! म तपाईंको INNERVOICE AI साथी हुँ। 🌿",
+            "chat_welcome_desc": "कुराकानी सुरु गर्न तल सन्देश टाइप गर्नुहोस्।",
+            "chat_placeholder": "आफ्नो मनको कुरा लेख्नुहोस्..."
+        },
+        "kok": {
+            "sidebar_dashboard": "🏠 डॅशबोर्ड",
+            "sidebar_mood": "💭 मूड ट्रॅकर",
+            "sidebar_analytics": "📊 विश्लेषण",
+            "sidebar_journal": "📝 वैयक्तिक जर्नल",
+            "sidebar_reflection": "✨ विचार",
+            "sidebar_voice_journal": "🎤 व्हॉईस जर्नल",
+            "sidebar_daily_plan": "🌱 दिसाचें नियोजन",
+            "sidebar_goals": "🎯 ध्येयां",
+            "sidebar_sleep": "😴 न्हिद ट्रॅकर",
+            "sidebar_smart_insights": "💡 स्मार्ट अंतर्दृष्टी",
+            "sidebar_ai_insights": "🧠 AI अंतर्दृष्टी",
+            "sidebar_assessment": "🧪 मानसीक मूल्यमापन",
+            "sidebar_chatbot": "🤖 AI चॅटबॉट",
+            "sidebar_achievements": "🏆 जैत/प्राप्ती",
+            "sidebar_focus": "⏱️ फोकस सत्र",
+            "sidebar_resources": "🌿 साधनां (ध्यान/संगीत)",
+            "sidebar_profile": "⚙️ मांडणी आणी प्रोफाईल",
+            "sidebar_admin": "🛡️ ॲडमिन पॅनेल",
+            "sidebar_emergency": "🆘 आपत्कालीन आदार",
+            "topbar_greeting": "देव बऱ्याक करूं 🌿",
+            "topbar_sub": "आयज तुका कसें दिसता?",
+            "chat_welcome_title": "नमस्कार! हांव तुमचो INNERVOICE AI वांगडी. 🌿",
+            "chat_welcome_desc": "उलोवप सुरू करपाक सकयल संदेश टायप करात.",
+            "chat_placeholder": "तुमच्या मनांत किदे आसा तें बरयात..."
+        },
+        "ks": {
+            "sidebar_dashboard": "🏠 ڈیش بورڈ",
+            "sidebar_mood": "💭 موڈ ٹریکر",
+            "sidebar_analytics": "📊 تجزیہ",
+            "sidebar_journal": "📝 پرسنل ڈائری",
+            "sidebar_reflection": "✨ خیالات",
+            "sidebar_voice_journal": "🎤 وائس ڈائری",
+            "sidebar_daily_plan": "🌱 روزانہ منصوبہ",
+            "sidebar_goals": "🎯 مقصد",
+            "sidebar_sleep": "😴 نیند ٹریکر",
+            "sidebar_smart_insights": "💡 اسمارٹ بصیرت",
+            "sidebar_ai_insights": "🧠 AI بصیرت",
+            "sidebar_assessment": "🧪 دماغی جائزہ",
+            "sidebar_chatbot": "🤖 AI چیٹ بوٹ",
+            "sidebar_achievements": "🏆 کامیابیاں",
+            "sidebar_focus": "⏱️ فوکس سیشن",
+            "sidebar_resources": "🌿 وسائل",
+            "sidebar_profile": "⚙️ سیٹنگز",
+            "sidebar_admin": "🛡️ ایڈمن پینل",
+            "sidebar_emergency": "🆘 ہنگامی مدد",
+            "topbar_greeting": "سلام 🌿",
+            "topbar_sub": "از کیا چھوہ احساس؟",
+            "chat_welcome_title": "سلام! بہ چھس توہند INNERVOICE AI ساتھی। 🌿",
+            "chat_welcome_desc": "کتھ باتھ شروع کرنے خٲطرہ لیکھیو لکھیت۔",
+            "chat_placeholder": "پننہ دلچ کتھ لیکھیو..."
+        },
+        "mai": {
+            "sidebar_dashboard": "🏠 डैशबोर्ड",
+            "sidebar_mood": "💭 मूड ट्रैकर",
+            "sidebar_analytics": "📊 विश्लेषण",
+            "sidebar_journal": "📝 व्यक्तिगत डायरी",
+            "sidebar_reflection": "✨ विचार",
+            "sidebar_voice_journal": "🎤 वॉइस डायरी",
+            "sidebar_daily_plan": "🌱 दैनिक योजना",
+            "sidebar_goals": "🎯 लक्ष्य",
+            "sidebar_sleep": "😴 नींद ट्रैकर",
+            "sidebar_smart_insights": "💡 स्मार्ट अंतर्दृष्टि",
+            "sidebar_ai_insights": "🧠 एआई अंतर्दृष्टि",
+            "sidebar_assessment": "🧪 मानसिक मूल्यांकन",
+            "sidebar_chatbot": "🤖 एआई चैटबॉट",
+            "sidebar_achievements": "🏆 उपलब्धि सब",
+            "sidebar_focus": "⏱️ ध्यान सत्र",
+            "sidebar_resources": "🌿 संसाधन (ध्यान/संगीत)",
+            "sidebar_profile": "⚙️ सेटिंग्स आओर प्रोफाइल",
+            "sidebar_admin": "🛡️ एडमिन पैनल",
+            "sidebar_emergency": "🆘 आपातकालीन सहायता",
+            "topbar_greeting": "प्रणाम 🌿",
+            "topbar_sub": "आइ अहाँ केहन अनुभव कऽ रहल छी?",
+            "chat_welcome_title": "प्रणाम! हम अहाँक INNERVOICE AI संगी छी। 🌿",
+            "chat_welcome_desc": "बातचीत शुरू करबाक लेल नीचा संदेश लिखू।",
+            "chat_placeholder": "अपने मनक बात लिखू..."
+        },
+        "brx": {
+            "sidebar_dashboard": "🏠 डैशबोर्ड",
+            "sidebar_mood": "💭 मूड ट्रेकर",
+            "sidebar_analytics": "📊 बिजिरनाय",
+            "sidebar_journal": "📝 गावनिफ्रा जारनैल",
+            "sidebar_reflection": "✨ साननाय",
+            "sidebar_voice_journal": "🎤 रावनि जारनैल",
+            "sidebar_daily_plan": "🌱 सानफ्रामनि थांखि",
+            "sidebar_goals": "🎯 थांखिफोर",
+            "sidebar_sleep": "😴 उन्दुनाय ट्रेकर",
+            "sidebar_smart_insights": "💡 स्मार्ट ग्यान",
+            "sidebar_ai_insights": "🧠 AI ग्यान",
+            "sidebar_assessment": "🧪 गोसोनि आनजाद",
+            "sidebar_chatbot": "🤖 AI चैटबॉट",
+            "sidebar_achievements": "🏆 देरहानायफोर",
+            "sidebar_focus": "⏱️ नजर होनाय",
+            "sidebar_resources": "🌿 मोजां आयदा",
+            "sidebar_profile": "⚙️ सेटिंस आरो प्रोफाइल",
+            "sidebar_admin": "🛡️ एडमिन पेलनेल",
+            "sidebar_emergency": "🆘 गोनांथार मदद",
+            "topbar_greeting": "गोजोन फुंबिलि 🌿",
+            "topbar_sub": "दिनै नोंहा माबोरै मोन्दांङो?",
+            "chat_welcome_title": "खुलुमबाय! आं नोंनि INNERVOICE AI लोगो। 🌿",
+            "chat_welcome_desc": "रायलायनो गाहाययाव लिर।",
+            "chat_placeholder": "गावनि गोसोनि बाथ्रा लिर..."
+        },
+        "doi": {
+            "sidebar_dashboard": "🏠 डैशबोर्ड",
+            "sidebar_mood": "💭 मूड ट्रैकर",
+            "sidebar_analytics": "📊 विश्लेषण",
+            "sidebar_journal": "📝 निजी जर्नल",
+            "sidebar_reflection": "✨ विचार",
+            "sidebar_voice_journal": "🎤 वाइस जर्नल",
+            "sidebar_daily_plan": "🌱 रोजै दी योजना",
+            "sidebar_goals": "🎯 लक्ष्य",
+            "sidebar_sleep": "😴 नींद ट्रैकर",
+            "sidebar_smart_insights": "💡 स्मार्ट अंतर्दृष्टि",
+            "sidebar_ai_insights": "🧠 AI अंतर्दृष्टि",
+            "sidebar_assessment": "🧪 मानसिक मूल्यांकन",
+            "sidebar_chatbot": "🤖 AI चैटबॉट",
+            "sidebar_achievements": "🏆 उपलब्धियां",
+            "sidebar_focus": "⏱️ ध्यान सत्र",
+            "sidebar_resources": "🌿 साधन (ध्यान/संगीत)",
+            "sidebar_profile": "⚙️ सेट्टिंगा ते प्रोफाइल",
+            "sidebar_admin": "🛡️ एडमिन पैनल",
+            "sidebar_emergency": "🆘 आपातकालीन मदद",
+            "topbar_greeting": "नमस्ते 🌿",
+            "topbar_sub": "अज्ज तुस केह् महसूस करी करदे ओ?",
+            "chat_welcome_title": "नमस्ते! मैं तुहँदा INNERVOICE AI साथी आं। 🌿",
+            "chat_welcome_desc": "गल्लबात शुरू करने आस्तै हेठ संदेश लिखो।",
+            "chat_placeholder": "अपने दिल दी गल्ल लिखो..."
+        },
+        "mni": {
+            "sidebar_dashboard": "🏠 ꯗꯦꯁꯕꯣꯔ꯭ꯗ",
+            "sidebar_mood": "💭 ꯃꯨꯗ ꯠꯔꯦꯀꯔ",
+            "sidebar_analytics": "📊 ꯑꯦꯅꯥꯂꯥꯏꯇꯤꯛꯁ",
+            "sidebar_journal": "📝 ꯏꯁꯥꯒꯤ ꯖꯔꯅꯦꯜ",
+            "sidebar_reflection": "✨ ꯋꯥꯈꯜꯂꯣꯟ",
+            "sidebar_voice_journal": "🎤 ꯈꯣꯟꯖꯦꯜ ꯖꯔꯅꯦꯜ",
+            "sidebar_daily_plan": "🌱 ꯅꯨꯃꯤꯠꯀꯤ ꯊꯧꯔꯥꯡ",
+            "sidebar_goals": "🎯 ꯄꯥꯟꯗꯃꯁꯤꯡ",
+            "sidebar_sleep": "😴 ꯇꯨꯝꯕꯒꯤ ꯠꯔꯦꯀꯔ",
+            "sidebar_smart_insights": "💡 ꯁ꯭ꯃꯥꯔ꯭ꯠ ꯏꯟꯁꯥꯏꯠ",
+            "sidebar_ai_insights": "🧠 AI ꯏꯟꯁꯥꯏꯠ",
+            "sidebar_assessment": "🧪 ꯋꯥꯈꯜꯒꯤ ꯑꯁꯦꯡꯕ ꯌꯦꯡꯁꯤꯅꯕ",
+            "sidebar_chatbot": "🤖 AI ꯆꯦꯠꯕꯣꯠ",
+            "sidebar_achievements": "🏆 ꯃꯥꯏꯄꯥꯀꯄꯁꯤꯡ",
+            "sidebar_focus": "⏱️ ꯃꯤꯠꯌꯦꯡ ꯊꯝꯕ",
+            "sidebar_resources": "🌿 ꯃꯇꯦꯡ (ꯂꯥꯏꯁꯣꯟ/ꯏꯁꯩ)",
+            "sidebar_profile": "⚙️ ꯁꯦꯇꯤꯡꯁ ꯑꯃꯁꯨꯡ ꯄ꯭ꯔꯣꯐꯥꯏꯜ",
+            "sidebar_admin": "🛡️ ꯑꯦꯗꯃꯤꯅ ꯄꯦꯅꯦꯜ",
+            "sidebar_emergency": "🆘 ꯑꯀꯅꯕ ꯃꯇꯦꯡ",
+            "topbar_greeting": "ꯈꯨꯔꯨꯃꯖꯔꯤ 🌿",
+            "topbar_sub": "ꯉꯁꯤ ꯑꯗꯣꯝ ꯀꯔꯝꯅ ꯐꯥꯑꯣꯕꯒꯦ?",
+            "chat_welcome_title": "ꯈꯨꯔꯨꯃꯖꯔꯤ! ꯑꯩꯅꯥ ꯑꯗꯣꯃꯒꯤ INNERVOICE AI ꯃꯔꯨꯞꯅꯤ। 🌿",
+            "chat_welcome_desc": "ꯋꯥꯔꯤ ꯁꯥꯅꯕꯒꯤꯗꯃꯛ ꯃꯈꯥꯗ ꯃꯦꯁꯦꯖ ꯏꯕꯤꯌꯨ꯫",
+            "chat_placeholder": "ꯑꯗꯣꯃꯒꯤ ꯋꯥꯈꯜꯗ ꯂꯩꯕꯗꯨ ꯏꯕꯤꯌꯨ..."
+        },
+        "sat": {
+            "sidebar_dashboard": "🏠 ᱰᱮᱥᱵᱳᱨᱰ",
+            "sidebar_mood": "💭 ᱢᱩᱰ ᱴᱨᱮᱠᱟᱨ",
+            "sidebar_analytics": "📊 ᱵᱤᱪᱟᱹᱨ",
+            "sidebar_journal": "📝 ᱟᱯᱱᱟᱨᱟᱜ ᱡᱚᱨᱱᱟᱞ",
+            "sidebar_reflection": "✨ ᱩᱦᱩᱸ, ᱵᱷᱟᱵᱽᱱᱟ",
+            "sidebar_voice_journal": "🎤 ᱟᱲᱟᱝ ᱡᱚᱨᱱᱟᱞ",
+            "sidebar_daily_plan": "🌱 ᱫᱤᱱᱟᱹᱢ ᱠᱟᱹᱢᱤ ᱭᱳᱡᱽᱱᱟ",
+            "sidebar_goals": "🎯 ᱡᱚᱥ (Goals)",
+            "sidebar_sleep": "😴 ᱡᱟᱹᱯᱤᱫ ᱴᱨᱮᱠᱟᱨ",
+            "sidebar_smart_insights": "💡 ᱥᱢᱟᱨᱴ ᱜᱽᱭᱟᱱ",
+            "sidebar_ai_insights": "🧠 AI ᱜᱽᱭᱟᱱ",
+            "sidebar_assessment": "🧪 ᱢᱚᱱᱮ ᱡᱟᱸᱪ",
+            "sidebar_chatbot": "🤖 AI ᱪᱮᱴᱵᱳᱴ",
+            "sidebar_achievements": "🏆 ᱡᱤᱛᱠᱟᱹᱨ",
+            "sidebar_focus": "⏱️ ᱫᱷᱭᱟᱱ",
+            "sidebar_resources": "🌿 ᱥᱟᱯᱟᱯ ( ध्यान/ᱥᱮᱨᱮᱧ)",
+            "sidebar_profile": "⚙️ ᱥᱮᱴᱤᱝ ᱟᱨ ᱯᱨᱳᱯᱷᱟᱭᱤᱞ",
+            "sidebar_admin": "🛡️ ᱮᱰᱢᱤᱱ ᱯᱮᱱᱮᱞ",
+            "sidebar_emergency": "🆘 ᱟᱹᱰᱤ ᱞᱟᱹᱠᱛᱤᱭᱟᱱ ᱜᱚᱲᱚ",
+            "topbar_greeting": "ᱡᱚᱦᱟᱨ 🌿",
+            "topbar_sub": "ᱛᱮᱦᱮᱧ ᱪᱮᱫ ᱞᱮᱠᱟᱢ ᱵᱩᱡᱷᱟᱹᱣᱮᱫᱟ?",
+            "chat_welcome_title": "ᱡᱚᱦᱟᱨ! ᱤᱧ ᱫᱚ ᱟᱢᱤᱡ INNERVOICE AI ᱜᱟᱛᱮ। 🌿",
+            "chat_welcome_desc": "ᱜᱟᱞᱢᱟ open ᱞᱟᱹᱜᱤᱫ ᱞᱟᱛᱟᱨ ᱨᱮ ᱚᱞ ᱢᱮ।",
+            "chat_placeholder": "ᱢᱚᱱᱮ ᱨᱮᱱᱟᱜ ᱠᱟᱛᱷᱟ ᱚᱞ ᱢᱮ..."
+        },
+        "sd": {
+            "sidebar_dashboard": "🏠 ڊيش بورڊ",
+            "sidebar_mood": "💭 موڊ ٽريڪر",
+            "sidebar_analytics": "📊 تجزيو",
+            "sidebar_journal": "📝 ذاتي ڊائري",
+            "sidebar_reflection": "✨ سوچون",
+            "sidebar_voice_journal": "🎤 وائيس ڊائري",
+            "sidebar_daily_plan": "🌱 روزاني رٿا",
+            "sidebar_goals": "🎯 مقصد",
+            "sidebar_sleep": "😴 ننڊ جو ٽريڪر",
+            "sidebar_smart_insights": "💡 سمارٽ بصيلت",
+            "sidebar_ai_insights": "🧠 AI بصيلت",
+            "sidebar_assessment": "🧪 ذهني صحت جو جائزو",
+            "sidebar_chatbot": "🤖 AI چيٽ بوٽ",
+            "sidebar_achievements": "🏆 ڪاميابيون",
+            "sidebar_focus": "⏱️ فوڪس سيشن",
+            "sidebar_resources": "🌿 وسيلن",
+            "sidebar_profile": "⚙️ سيٽنگون ۽ پروفائل",
+            "sidebar_admin": "🛡️ ائڊمن پينل",
+            "sidebar_emergency": "🆘 هنگامي مدد",
+            "topbar_greeting": "ڀلي ڪري آيا 🌿",
+            "topbar_sub": "اڄ توهان ڪيان محسوس ڪري رهيا آهيو؟",
+            "chat_welcome_title": "اسلام عليڪم! مان توهان جو INNERVOICE AI ساٿي آهيان. 🌿",
+            "chat_welcome_desc": "ڳالهه ٻولهه شروع ڪرڻ لاءِ هيٺ پيغام لکو.",
+            "chat_placeholder": "پنهنجي دل جي ڳالهه لکو..."
+        }
+    };
+
+    window.UI_TRANSLATIONS = UI_TRANSLATIONS;
+
+    // Helper: translate element text dynamically
+    window.changeAppLanguage = function(langCode) {
+        if (!langCode) langCode = 'en';
+        localStorage.setItem('innerVoiceAppLang', langCode);
+
+        // Sync dropdowns
+        const editLang = document.getElementById('editLanguage');
+        const topbarLang = document.getElementById('topbarLanguageSelect');
+        if (editLang) editLang.value = langCode;
+        if (topbarLang) topbarLang.value = langCode;
+
+        // Update currentUser if logged in
+        if (window.currentUser) {
+            window.currentUser.language = langCode;
+            try {
+                let saved = JSON.parse(localStorage.getItem('innerVoiceCurrentUser') || '{}');
+                saved.language = langCode;
+                localStorage.setItem('innerVoiceCurrentUser', JSON.stringify(saved));
+            } catch(e) {}
+        }
+
+        const trans = UI_TRANSLATIONS[langCode] || UI_TRANSLATIONS['en'];
+        const fallback = UI_TRANSLATIONS['en'];
+
+        function getStr(key) {
+            return trans[key] || fallback[key] || "";
+        }
+
+        // 1. Sidebar Links
+        const sidebarMap = {
+            '#dashboard': 'sidebar_dashboard',
+            '#mood': 'sidebar_mood',
+            '#emotionPatterns': 'sidebar_analytics',
+            '#journal': 'sidebar_journal',
+            '#reflection': 'sidebar_reflection',
+            '#voiceJournal': 'sidebar_voice_journal',
+            '#dailyPlan': 'sidebar_daily_plan',
+            '#goals': 'sidebar_goals',
+            '#sleep': 'sidebar_sleep',
+            '#wellnessInsights': 'sidebar_smart_insights',
+            '#aiInsights': 'sidebar_ai_insights',
+            '#assessment': 'sidebar_assessment',
+            '#chatbot': 'sidebar_chatbot',
+            '#achievements': 'sidebar_achievements',
+            '#focusMode': 'sidebar_focus',
+            '#resources': 'sidebar_resources',
+            '#profile': 'sidebar_profile',
+            '#admin': 'sidebar_admin'
+        };
+
+        document.querySelectorAll('.sidebar-link').forEach(link => {
+            const href = link.getAttribute('href');
+            if (sidebarMap[href]) {
+                link.innerHTML = getStr(sidebarMap[href]);
+            } else if (link.getAttribute('onclick') && link.getAttribute('onclick').includes('openEmergencyModal')) {
+                link.innerHTML = getStr('sidebar_emergency');
+            }
+        });
+
+        // 2. Topbar Greeting
+        const greetingEl = document.getElementById('topbarGreeting');
+        if (greetingEl) greetingEl.textContent = getStr('topbar_greeting');
+
+        // 3. Chatbot welcome & input placeholder
+        const chatInput = document.getElementById('chatInput');
+        if (chatInput) chatInput.placeholder = getStr('chat_placeholder');
+
+        const chatWelcome = document.getElementById('chatWelcome');
+        if (chatWelcome) {
+            chatWelcome.innerHTML = `<div style="font-size:42px; margin-bottom:12px;">🌿</div><p><strong>${getStr('chat_welcome_title')}</strong></p><p style="margin-top:8px; color:#9ca3af; font-size:14px;">${getStr('chat_welcome_desc')}</p>`;
+        }
+
+        console.log('🌐 Language switched to:', langCode);
+    };
+
+    // Auto-apply stored language on startup
+    document.addEventListener('DOMContentLoaded', () => {
+        const stored = localStorage.getItem('innerVoiceAppLang') || (window.currentUser && window.currentUser.language) || 'en';
+        window.changeAppLanguage(stored);
+    });
+})();
+
+
+    // Analytics Period Filter Listeners
+    document.addEventListener("DOMContentLoaded", () => {
+        const p7 = document.getElementById("period7dBtn");
+        const p30 = document.getElementById("period30dBtn");
+        const pAll = document.getElementById("periodAllBtn");
+
+        function setPeriod(period, btn) {
+            [p7, p30, pAll].forEach(b => b && b.classList.remove("active"));
+            if (btn) btn.classList.add("active");
+            if (typeof window.filterMoodHistoryByPeriod === "function") {
+                window.filterMoodHistoryByPeriod(period);
+            }
+            if (typeof window.loadWellnessAnalytics === "function") {
+                window.loadWellnessAnalytics(period);
+            }
+        }
+
+        if (p7) p7.addEventListener("click", () => setPeriod("7d", p7));
+        if (p30) p30.addEventListener("click", () => setPeriod("30d", p30));
+        if (pAll) pAll.addEventListener("click", () => setPeriod("all", pAll));
+    });
+    
+
+    // Meditation Timer Duration Selectors
+    document.addEventListener("DOMContentLoaded", () => {
+        [1, 2, 5, 10, 15].forEach(mins => {
+            const btn = document.getElementById("medBtn" + mins);
+            if (btn) {
+                btn.addEventListener("click", () => {
+                    document.querySelectorAll("[id^='medBtn']").forEach(b => b.classList.remove("active"));
+                    btn.classList.add("active");
+                    if (typeof window.setMeditationTimerMinutes === "function") {
+                        window.setMeditationTimerMinutes(mins);
+                    }
+                });
+            }
+        });
+    });
+    
+
+    // Breathing Exercise Pattern Selectors
+    document.addEventListener("DOMContentLoaded", () => {
+        const b478 = document.getElementById("breathBtn478");
+        const bBox = document.getElementById("breathBtnBox");
+        const b44  = document.getElementById("breathBtn44");
+
+        function setBreathingPattern(pattern, btn) {
+            [b478, bBox, b44].forEach(b => b && b.classList.remove("active"));
+            if (btn) btn.classList.add("active");
+            if (typeof window.setBreathingPattern === "function") {
+                window.setBreathingPattern(pattern);
+            }
+        }
+
+        if (b478) b478.addEventListener("click", () => setBreathingPattern("4-7-8", b478));
+        if (bBox) bBox.addEventListener("click", () => setBreathingPattern("box", bBox));
+        if (b44)  b44.addEventListener("click", () => setBreathingPattern("4-4", b44));
+    });
+    
+
+    // Accept Habit Suggestion Listener
+    document.addEventListener("DOMContentLoaded", () => {
+        const btn = document.getElementById("btnAcceptSuggestion");
+        if (btn) {
+            btn.addEventListener("click", () => {
+                const suggName = document.getElementById("habitSuggestionTitle")?.textContent || "New Habit";
+                const modal = document.getElementById("habitModal");
+                const nameInput = document.getElementById("habitName");
+                if (nameInput) nameInput.value = suggName;
+                if (modal) modal.style.display = "flex";
+            });
+        }
+    });
+    
+
+    // Exercise toggle & completion handlers
+    window.toggleExercise = function(btn) {
+        const body = btn.closest('.exercise-card')?.querySelector('.exercise-body') || btn.nextElementSibling;
+        if (body) {
+            const isHidden = body.style.display === "none" || !body.style.display;
+            body.style.display = isHidden ? "block" : "none";
+            btn.textContent = isHidden ? "Hide exercise ↑" : "Show exercise ↓";
+        }
+    };
+
+    window.markExerciseDone = function(btn) {
+        btn.textContent = "✓ Completed";
+        btn.disabled = true;
+        btn.style.opacity = "0.7";
+        if (typeof showMessage === "function") {
+            showMessage("✨ Exercise completed! +10 XP awarded.");
+        }
+        if (typeof awardXp === "function") awardXp(10);
+    };
+
+    window.filterGoals = function(status) {
+        const goalCards = document.querySelectorAll(".goal-card, .goal-item");
+        goalCards.forEach(card => {
+            if (status === "all") {
+                card.style.display = "block";
+            } else {
+                const cardStatus = card.getAttribute("data-status") || "in_progress";
+                card.style.display = cardStatus === status ? "block" : "none";
+            }
+        });
+    };
+    
+
+    // Focus Timer Implementation
+    let focusTimerInterval = null;
+    let focusMinutesLeft = 25;
+    let focusSecondsLeft = 0;
+    let isFocusRunning = false;
+
+    window.setFocusTimerMinutes = function(mins) {
+        focusMinutesLeft = mins;
+        focusSecondsLeft = 0;
+        updateFocusTimerDisplay();
+    };
+
+    function updateFocusTimerDisplay() {
+        const display = document.getElementById("focusTimerDisplay");
+        if (display) {
+            const m = String(focusMinutesLeft).padStart(2, '0');
+            const s = String(focusSecondsLeft).padStart(2, '0');
+            display.textContent = `${m}:${s}`;
+        }
+    }
+
+    window.toggleFocusTimer = function() {
+        const startBtn = document.getElementById("startFocusBtn");
+        const pauseBtn = document.getElementById("pauseFocusBtn");
+
+        if (isFocusRunning) {
+            clearInterval(focusTimerInterval);
+            isFocusRunning = false;
+            if (startBtn) startBtn.style.display = "inline-block";
+            if (pauseBtn) pauseBtn.style.display = "none";
+        } else {
+            isFocusRunning = true;
+            if (startBtn) startBtn.style.display = "none";
+            if (pauseBtn) pauseBtn.style.display = "inline-block";
+
+            focusTimerInterval = setInterval(() => {
+                if (focusSecondsLeft > 0) {
+                    focusSecondsLeft--;
+                } else if (focusMinutesLeft > 0) {
+                    focusMinutesLeft--;
+                    focusSecondsLeft = 59;
+                } else {
+                    clearInterval(focusTimerInterval);
+                    isFocusRunning = false;
+                    if (startBtn) startBtn.style.display = "inline-block";
+                    if (pauseBtn) pauseBtn.style.display = "none";
+                    if (typeof showMessage === "function") showMessage("🎉 Focus session completed! Take a short break.");
+                    if (typeof awardXp === "function") awardXp(20);
+                }
+                updateFocusTimerDisplay();
+            }, 1000);
+        }
+    };
+
+    window.resetFocusTimer = function() {
+        clearInterval(focusTimerInterval);
+        isFocusRunning = false;
+        focusMinutesLeft = 25;
+        focusSecondsLeft = 0;
+        updateFocusTimerDisplay();
+        const startBtn = document.getElementById("startFocusBtn");
+        const pauseBtn = document.getElementById("pauseFocusBtn");
+        if (startBtn) startBtn.style.display = "inline-block";
+        if (pauseBtn) pauseBtn.style.display = "none";
+    };

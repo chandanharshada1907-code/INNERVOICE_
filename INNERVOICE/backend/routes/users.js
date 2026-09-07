@@ -102,6 +102,7 @@ db.query(CREATE_PREFERENCES_TABLE_SQL, (err) => {
     } else {
         // Soft migration for existing tables
         db.query("ALTER TABLE user_preferences ADD COLUMN reminder_preference VARCHAR(50) DEFAULT 'none'", () => {});
+        db.query("ALTER TABLE user_preferences ADD COLUMN avatar VARCHAR(100) DEFAULT '🌸'", () => {});
         // user_preferences table ready
     }
 });
@@ -125,7 +126,7 @@ router.get("/profile", verifyToken, (req, res) => {
     }
 
     const userSql = `
-        SELECT id AS user_id, name, email, streak, created_at
+        SELECT id AS user_id, name, email, role, streak, created_at
         FROM users
         WHERE id = ?
     `;
@@ -189,6 +190,7 @@ router.get("/profile", verifyToken, (req, res) => {
                     user_id: user.user_id,
                     name: user.name,
                     email: user.email,
+                    role: user.role || 'user',
                     streak: user.streak || 0,
                     created_at: user.created_at,
                     avatar: prefs.avatar || "🌸",

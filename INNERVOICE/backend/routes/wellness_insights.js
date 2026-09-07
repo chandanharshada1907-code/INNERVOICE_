@@ -117,18 +117,21 @@ async function generateInsights(userId) {
 // GET /api/wellness-insights
 router.get('/', authenticateToken, async (req, res) => {
     try {
-        const insights = await generateInsights(req.user.id || req.user.user_id);
-        res.json({ insights });
+        const userId = req.user.user_id || req.user.id;
+        if (!userId) return res.status(401).json({ success: false, message: "Unauthorized." });
+        const insights = await generateInsights(userId);
+        res.json({ success: true, insights: insights || [] });
     } catch (error) {
         console.error('Error fetching wellness insights:', error);
-        res.status(500).json({ error: 'Internal server error' });
+        res.status(500).json({ success: false, insights: [], error: 'Internal server error' });
     }
 });
 
 // GET /api/wellness-insights/trends
 router.get('/trends', authenticateToken, async (req, res) => {
     try {
-        const userId = req.user.id || req.user.user_id;
+        const userId = req.user.user_id || req.user.id;
+        if (!userId) return res.status(401).json({ success: false, message: "Unauthorized." });
         const trends = [];
         
         // Example Trend: Wellness Score over the last 2 weeks
@@ -139,7 +142,7 @@ router.get('/trends', authenticateToken, async (req, res) => {
              ORDER BY score_date ASC`, [userId]
         );
         
-        if (scores.length >= 2) {
+        if (scores && scores.length >= 2) {
             const firstScore = scores[0].score;
             const lastScore = scores[scores.length - 1].score;
             if (lastScore > firstScore) {
@@ -161,17 +164,18 @@ router.get('/trends', authenticateToken, async (req, res) => {
             }
         }
         
-        res.json({ trends });
+        res.json({ success: true, trends: trends || [] });
     } catch (error) {
         console.error('Error fetching trends:', error);
-        res.status(500).json({ error: 'Internal server error' });
+        res.status(500).json({ success: false, trends: [], error: 'Internal server error' });
     }
 });
 
 // GET /api/wellness-insights/patterns
 router.get('/patterns', authenticateToken, async (req, res) => {
     try {
-        const userId = req.user.id || req.user.user_id;
+        const userId = req.user.user_id || req.user.id;
+        if (!userId) return res.status(401).json({ success: false, message: "Unauthorized." });
         const patterns = [];
         
         // Example Pattern: Does mood correlate with journaling?
@@ -187,15 +191,16 @@ router.get('/patterns', authenticateToken, async (req, res) => {
              WHERE user_id = ? AND created_at >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)`, [userId]
         );
         
-        const journalSet = new Set(journalDays.map(j => j.date));
+        const journalSet = new Set((journalDays || []).map(j => j.date ? (typeof j.date === 'object' ? j.date.toISOString().slice(0,10) : String(j.date)) : ''));
         
         let goodMoodWithJournal = 0;
         let totalJournalDays = 0;
         
-        moodDays.forEach(m => {
-            if (journalSet.has(m.date)) {
+        (moodDays || []).forEach(m => {
+            const mDateStr = m.date ? (typeof m.date === 'object' ? m.date.toISOString().slice(0,10) : String(m.date)) : '';
+            if (mDateStr && journalSet.has(mDateStr)) {
                 totalJournalDays++;
-                if (m.mood === 'Great' || m.mood === 'Good') {
+                if (m.mood === 'Great' || m.mood === 'Good' || m.mood === 'happy') {
                     goodMoodWithJournal++;
                 }
             }
@@ -211,10 +216,10 @@ router.get('/patterns', authenticateToken, async (req, res) => {
             });
         }
         
-        res.json({ patterns });
+        res.json({ success: true, patterns: patterns || [] });
     } catch (error) {
         console.error('Error fetching patterns:', error);
-        res.status(500).json({ error: 'Internal server error' });
+        res.status(500).json({ success: false, patterns: [], error: 'Internal server error' });
     }
 });
 

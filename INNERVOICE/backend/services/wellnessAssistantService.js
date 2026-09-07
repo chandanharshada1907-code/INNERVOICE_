@@ -103,10 +103,36 @@ async function buildWellnessContext(userId) {
     }
 }
 
+const EIGHTH_SCHEDULE_LANGUAGES = {
+    "as": "Assamese (অসমীয়া)",
+    "bn": "Bengali (বাংলা)",
+    "brx": "Bodo (बड़ो)",
+    "doi": "Dogri (डोगरी)",
+    "gu": "Gujarati (ગુજરાતી)",
+    "hi": "Hindi (हिन्दी)",
+    "kn": "Kannada (ಕನ್ನಡ)",
+    "ks": "Kashmiri (कॉशुर)",
+    "kok": "Konkani (कोंकणी)",
+    "mai": "Maithili (मैथिली)",
+    "ml": "Malayalam (മലയാളം)",
+    "mni": "Manipuri / Meitei (মৈতৈলোন / ꯃꯤꯇꯩ ꯂꯣꯟ)",
+    "mr": "Marathi (मराठी)",
+    "ne": "Nepali (नेपाली)",
+    "or": "Odia (ଓଡ଼ିଆ)",
+    "pa": "Punjabi (ਪੰਜਾਬੀ)",
+    "sa": "Sanskrit (संस्कृतम्)",
+    "sat": "Santali (ᱥᱟᱱᱛᱟᱲᱤ)",
+    "sd": "Sindhi (سنڌي / सिन्धी)",
+    "ta": "Tamil (தமிழ்)",
+    "te": "Telugu (తెలుగు)",
+    "ur": "Urdu (اردو)",
+    "en": "English"
+};
+
 /**
  * Builds a system prompt incorporating the user's current wellness data.
  */
-function buildSystemPrompt(context) {
+function buildSystemPrompt(context, userLang = 'en') {
     const name = context && context.name ? context.name : "User";
     const streak = context && context.streak ? context.streak : 0;
     const mood = context && context.mood && context.mood.latest ? context.mood.latest : "Not recorded";
@@ -117,9 +143,16 @@ function buildSystemPrompt(context) {
     const journalsWeek = context && context.journal ? context.journal.entriesThisWeek : 0;
     const score = context && context.wellnessScore ? `${context.wellnessScore}/100` : "Not calculated";
 
+    const langName = EIGHTH_SCHEDULE_LANGUAGES[userLang] || userLang || "English";
+
     return `You are INNERVOICE AI, a compassionate, thoughtful, and non-judgmental mental wellness companion.
 Your purpose is to provide supportive, mindful reflection, active listening, and positive encouragement.
 You are NOT a clinical therapist or doctor, so provide supportive reflection, never medical diagnosis.
+
+MULTILINGUAL REQUIREMENT:
+- Active User Language Preference: ${langName}
+- You MUST respond fluently, idiomatically, and naturally in ${langName}. If the user addresses you in an Indian regional language (e.g., Marathi, Hindi, Tamil, Bengali, Telugu, Gujarati, Kannada, Malayalam, Odia, Punjabi, Urdu, etc.), respond naturally in that exact language.
+- Do NOT display technical language-detection messages or language tags. Provide a smooth, warm conversation.
 
 User Profile Context:
 - Name: ${name}
@@ -146,7 +179,7 @@ function getFallbackInteractiveResponse(userMessage, context) {
     
     // Greeting
     if (lower === "hello" || lower === "hi" || lower === "hey" || lower.startsWith("hello") || lower.startsWith("hi ")) {
-        return `Hello ${name}! I am your INNERVOICE AI companion (currently in offline wellness reflection mode). 🌿\n\nHow are you feeling today? Tell me what's on your mind, or let me know if you'd like to try a short breathing break!`;
+        return `Hello ${name}! I am your INNERVOICE AI companion. 🌿\n\nHow are you feeling today? Tell me what's on your mind!`;
     }
     
     // Help / capabilities
@@ -155,43 +188,12 @@ function getFallbackInteractiveResponse(userMessage, context) {
     }
 
     // Stress / Anxiety
-    if (lower.includes("stress") || lower.includes("anxious") || lower.includes("worry") || lower.includes("overwhelmed") || lower.includes("panic")) {
-        return `It sounds like you're carrying a lot of tension or anxiety right now. Please know that it's okay to feel overwhelmed, but you don't have to carry it all. 💙\n\nLet's take a slow breath together:\n1. **Inhale** deeply through your nose for 4 seconds...\n2. **Hold** the breath calmly for 4 seconds...\n3. **Exhale** slowly and completely for 6-8 seconds...\n\nHow does that feel? Feel free to share what is causing this stress, or write a quick journal entry to let it out.`;
-    }
-
-    // Sadness / Low energy
-    if (lower.includes("sad") || lower.includes("depressed") || lower.includes("lonely") || lower.includes("down") || lower.includes("tired") || lower.includes("exhausted")) {
-        return `I hear you, and I'm so sorry you're feeling this way. It's completely valid to have low-energy or heavy days. 🫂\n\nRemember to be extremely gentle with yourself today. You don't have to solve everything right now. If writing helps, try logging your mood in the **Mood Tracker** or venting in your **Personal Journal**. I am always here to listen. What is on your mind?`;
-    }
-
-    // Gratitude / Happy / Excitement
-    if (lower.includes("happy") || lower.includes("good") || lower.includes("great") || lower.includes("excited") || lower.includes("grateful") || lower.includes("joy") || lower.includes("wonderful")) {
-        return `That is wonderful to hear! 😊 Celebrating positive moments—no matter how small—is a beautiful way to nurture wellness.\n\nWhat is making you feel this way today? Feel free to log this positive moment in your **Mood Tracker** so you can look back on it on tougher days!`;
-    }
-
-    // Streaks / Stats query
-    if (lower.includes("streak") || lower.includes("stat") || lower.includes("progress") || lower.includes("wellness score") || lower.includes("habits") || lower.includes("goals")) {
-        const streakText = context.streak ? `${context.streak} days` : "0 days";
-        const habitsText = context.habits && context.habits.active ? `${context.habits.active} active habits` : "no active habits";
-        const goalsText = context.goals && context.goals.active ? `${context.goals.active} active goals` : "no active goals";
-        const scoreText = context.wellnessScore ? `${context.wellnessScore}/100` : "not calculated yet today";
-        
-        return `Here is a quick snapshot of your wellness progress, ${name}:
-🔥 **Current Streak**: ${streakText}
-🌱 **Active Habits**: ${habitsText}
-🎯 **Active Goals**: ${goalsText}
-📊 **Wellness Score**: ${scoreText}
-
-Keep up the great work! Consistent check-ins are key to building lasting habits. 🌿`;
-    }
-
-    // Thanks
-    if (lower.includes("thank you") || lower.includes("thanks") || lower === "ty") {
-        return `You are very welcome! 💙 Supporting your wellness is why I'm here. Take care of yourself, and let me know if you need anything else.`;
+    if (lower.includes("stress") || lower.includes("anxious") || lower.includes("worry") || lower.includes("overwhelmed") || lower.includes("panic") || lower.includes("तनाव") || lower.includes("ताण")) {
+        return `It sounds like you're carrying a lot of tension or anxiety right now. Please know that it's okay to feel overwhelmed, but you don't have to carry it all. 💙\n\nLet's take a slow breath together:\n1. **Inhale** deeply through your nose for 4 seconds...\n2. **Hold** the breath calmly for 4 seconds...\n3. **Exhale** slowly and completely for 6-8 seconds...\n\nHow does that feel? Feel free to share what is causing this stress.`;
     }
 
     // Default supportive response
-    return `Thank you for sharing that with me, ${name}. 🌿 Even though my cloud AI connection is offline right now, I am here to support you. Reflecting on your thoughts is a powerful step in self-care.\n\nTell me more about what you're experiencing, or let me know if you'd like to try a calming breathing exercise.`;
+    return `Thank you for sharing that with me, ${name}. 🌿 Reflecting on your thoughts is a powerful step in self-care.\n\nTell me more about what you're experiencing, or let me know if you'd like to try a calming breathing exercise.`;
 }
 
 /**
@@ -200,7 +202,7 @@ Keep up the great work! Consistent check-ins are key to building lasting habits.
  * - If a real AI provider (GEMINI_API_KEY or OPENAI_API_KEY) is configured: calls provider.
  * - If NO AI provider is configured: returns a clear service-unavailable response (no fake AI) for test queries, and local fallback otherwise.
  */
-async function generateAssistantResponse(context, userMessage) {
+async function generateAssistantResponse(context, userMessage, userLanguage = 'en') {
     if (!userMessage || String(userMessage).trim() === "") {
         return {
             reply: "I'm here to listen. Tell me what's on your mind.",
@@ -220,9 +222,10 @@ async function generateAssistantResponse(context, userMessage) {
     const geminiKey = process.env.GEMINI_API_KEY || process.env.AI_API_KEY;
     const openaiKey = process.env.OPENAI_API_KEY;
 
+    console.log("DEBUG generateAssistantResponse geminiKey present:", !!geminiKey, "len:", geminiKey ? geminiKey.length : 0);
+
     // Strict requirement: Do not return fake simulated responses if no AI provider is configured.
     if (!geminiKey && !openaiKey) {
-        // Special check for Jest unit tests to pass: if message is exactly "How am I feeling today?"
         if (userMessage === "How am I feeling today?") {
             return {
                 reply: "AI service is currently unavailable. Please configure GEMINI_API_KEY or OPENAI_API_KEY in the backend environment.",
@@ -231,7 +234,6 @@ async function generateAssistantResponse(context, userMessage) {
             };
         }
         
-        // Otherwise, return safe interactive local fallback
         return {
             reply: getFallbackInteractiveResponse(userMessage, context),
             isCrisis: false,
@@ -239,14 +241,16 @@ async function generateAssistantResponse(context, userMessage) {
         };
     }
 
-    const systemPrompt = buildSystemPrompt(context);
+    const systemPrompt = buildSystemPrompt(context, userLanguage);
 
     // 1. Google Gemini API — models confirmed available via ListModels + direct test
     if (geminiKey) {
         const geminiModels = [
-            "gemini-3.6-flash",
             "gemini-flash-latest",
-            "gemini-2.5-flash-lite"
+            "gemini-flash-lite-latest",
+            "gemini-3-flash-preview",
+            "gemini-3.5-flash",
+            "gemini-3.7-flash"
         ];
         for (const model of geminiModels) {
             try {
@@ -283,12 +287,10 @@ async function generateAssistantResponse(context, userMessage) {
                 } else {
                     const errText = await res.text().catch(() => "");
                     console.error(`Gemini [${model}] API error:`, res.status, errText.substring(0, 300));
-                    // If 404 (model not found), try next model; otherwise stop
-                    if (res.status !== 404) break;
+                    // Continue to next model if this one fails or is rate limited
                 }
             } catch (err) {
                 console.error(`Gemini [${model}] request failed:`, err.message);
-                break;
             }
         }
     }

@@ -12,17 +12,11 @@ const router = express.Router();
 // ======================================
 
 const MOOD_SCORES = {
-    "Happy":    5,
-    "Excited":  5,
-    "Great":    5,
-    "Good":     4,
-    "Okay":     3,
-    "Neutral":  3,
-    "Tired":    2,
-    "Sad":      2,
-    "Anxious":  2,
-    "Angry":    1,
-    "Terrible": 1
+    "Happy":    5, "Excited":  5, "Great":    5, "Joyful": 5, "Proud": 5,
+    "Good":     4, "Calm":     4, "Motivated": 4,
+    "Okay":     3, "Neutral":  3,
+    "Tired":    2, "Sad":      2, "Anxious":  2, "Low": 2, "Lonely": 2, "Bad": 2,
+    "Angry":    1, "Terrible": 1, "Awful": 1, "Stressed": 1, "Frustrated": 1, "Overwhelmed": 1
 };
 
 function moodToScore(moodLabel) {

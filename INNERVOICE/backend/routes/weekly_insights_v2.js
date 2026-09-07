@@ -10,11 +10,11 @@ async function getPeriodStats(userId, startDate, endDate) {
     const [moods] = await db.promise().query(
         `SELECT mood, 
          CASE 
-            WHEN mood IN ('happy', 'great', 'excited', 'joyful', 'proud') THEN 5
-            WHEN mood IN ('good', 'calm', 'motivated') THEN 4
-            WHEN mood IN ('okay', 'neutral', 'tired') THEN 3
-            WHEN mood IN ('sad', 'low', 'lonely') THEN 2
-            WHEN mood IN ('anxious', 'angry', 'terrible', 'stressed', 'frustrated', 'overwhelmed') THEN 1
+            WHEN LOWER(mood) IN ('happy', 'great', 'excited', 'joyful', 'proud') THEN 5
+            WHEN LOWER(mood) IN ('good', 'calm', 'motivated') THEN 4
+            WHEN LOWER(mood) IN ('okay', 'neutral') THEN 3
+            WHEN LOWER(mood) IN ('bad', 'sad', 'tired', 'low', 'lonely') THEN 2
+            WHEN LOWER(mood) IN ('awful', 'angry', 'terrible', 'stressed', 'frustrated', 'overwhelmed') THEN 1
             ELSE 3 
          END as score 
          FROM moods 
@@ -46,10 +46,10 @@ async function getPeriodStats(userId, startDate, endDate) {
 
     // 2. Habit Stats
     const [habits] = await db.promise().query(
-        `SELECT COUNT(DISTINCT id) as active_habits FROM habits WHERE user_id = ?`,
+        `SELECT COUNT(DISTINCT id) as active_habits FROM habits WHERE user_id = ? AND active = TRUE`,
         [userId]
     );
-    const activeHabits = habits[0].active_habits || 0;
+    const activeHabits = habits[0] ? (habits[0].active_habits || 0) : 0;
     const expectedHabitCompletions = activeHabits * 7; // Assuming daily habits
 
     const [habitCompletions] = await db.promise().query(
@@ -57,7 +57,7 @@ async function getPeriodStats(userId, startDate, endDate) {
          WHERE user_id = ? AND DATE(completion_date) >= ? AND DATE(completion_date) <= ?`,
         [userId, startDate, endDate]
     );
-    const habitCompletedCount = habitCompletions[0].count || 0;
+    const habitCompletedCount = habitCompletions[0] ? (habitCompletions[0].count || 0) : 0;
     const habitCompletionRate = expectedHabitCompletions > 0 ? (habitCompletedCount / expectedHabitCompletions) * 100 : (habitCompletedCount > 0 ? 100 : null);
 
     // 3. Goal Stats
@@ -91,9 +91,10 @@ async function getPeriodStats(userId, startDate, endDate) {
     
     if (dailyPlans.length > 0) {
         const planIds = dailyPlans.map(p => p.id);
+        const placeholders = planIds.map(() => '?').join(',');
         const [planItems] = await db.promise().query(
-            `SELECT completed, skipped FROM daily_plan_items WHERE daily_plan_id IN (?)`,
-            [planIds]
+            `SELECT completed, skipped FROM daily_plan_items WHERE daily_plan_id IN (${placeholders})`,
+            planIds
         );
         totalItems = planItems.length;
         completedItems = planItems.filter(i => i.completed).length;
@@ -189,7 +190,8 @@ function calculateScore(stats) {
 // GET /api/insights/weekly
 router.get("/weekly", authenticateToken, async (req, res) => {
     try {
-        const userId = req.user.id || req.user.userId;
+        const userId = req.user.user_id || req.user.id || req.user.userId;
+        if (!userId) return res.status(401).json({ success: false, message: "Unauthorized." });
         
         // Use timezone-safe date calculations
         const today = new Date();
@@ -252,8 +254,10 @@ router.get("/weekly", authenticateToken, async (req, res) => {
                 
                 const aiResponse = await generateWellnessInsight(aiPrompt, userId);
                 if (aiResponse) {
-                    aiInsight.summary = aiResponse.split(/(?=Here are|I recommend|Try to)/i)[0].trim();
-                    const recs = aiResponse.match(/-(.*)|(?<=\d\.\s)(.*)/g);
+                    const rawVal = typeof aiResponse === "string" ? aiResponse : (aiResponse.text || aiResponse.message || aiResponse.summary || JSON.stringify(aiResponse));
+                    const respText = typeof rawVal === "object" ? JSON.stringify(rawVal) : String(rawVal || "");
+                    aiInsight.summary = respText.split(/(?=Here are|I recommend|Try to)/i)[0].trim() || "Weekly insights ready.";
+                    const recs = respText.match(/-(.*)|(?<=\d\.\s)(.*)/g);
                     if (recs) {
                         aiInsight.recommendations = recs.map(r => r.replace(/^-|^\d\.\s/, '').trim());
                     } else {
