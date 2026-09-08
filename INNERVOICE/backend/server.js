@@ -58,6 +58,12 @@ app.use(cors({
         if (allowedOriginsFromEnv.length > 0 && allowedOriginsFromEnv.includes(origin)) {
             return callback(null, true);
         }
+        // Allow same-host browser requests on Render (and any *.onrender.com subdomain).
+        // NOTE: browsers include the Origin header even for same-origin POSTs per the Fetch
+        // spec, so this check is required even when frontend and backend share one service.
+        if (/^https:\/\/[a-zA-Z0-9-]+\.onrender\.com$/.test(origin)) {
+            return callback(null, true);
+        }
         callback(new Error("Not allowed by CORS"));
     },
     credentials: true

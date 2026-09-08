@@ -5,7 +5,12 @@
     Works with the single-page HTML structure
 ========================================================= */
 
-const BACKEND_URL = "http://localhost:5000";
+const BACKEND_URL = (typeof window !== 'undefined' && window.INNERVOICE_API_URL)
+    ? window.INNERVOICE_API_URL
+    : (typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' || window.location.protocol === 'file:'))
+        ? 'http://localhost:5000'
+        : (typeof window !== 'undefined' && window.location.origin ? window.location.origin : 'http://localhost:5000');
+
 
 function getToken() {
      return localStorage.getItem("innerVoiceToken") || null;
@@ -21,14 +26,7 @@ document.addEventListener("DOMContentLoaded", function () {
        1. LOCAL STORAGE SETUP
     ===================================================== */
 
-    // =====================================================
-    // BACKEND API URL — Dynamic for production / local dev
-    // =====================================================
-    const BACKEND_URL = (typeof window !== 'undefined' && window.INNERVOICE_API_URL)
-        ? window.INNERVOICE_API_URL
-        : (typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' || window.location.protocol === 'file:'))
-            ? "http://localhost:5000"
-            : (typeof window !== 'undefined' && window.location.origin ? window.location.origin : "http://localhost:5000");
+
 
     let users = JSON.parse(localStorage.getItem("innerVoiceUsers")) || [];
     let currentUser = JSON.parse(localStorage.getItem("innerVoiceCurrentUser")) || null;
