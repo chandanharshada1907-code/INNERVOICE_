@@ -258,7 +258,7 @@ async function generateAssistantResponse(context, userMessage, userLanguage = 'e
 
     const systemPrompt = buildSystemPrompt(context, userLanguage);
 
-    // 1. Google Gemini API — Uses official production models with 10s AbortController timeout
+    // 1. Google Gemini API — Uses official production models with 30s AbortController timeout
     if (geminiKey) {
         const geminiModels = [
             "gemini-3.6-flash",
@@ -267,7 +267,7 @@ async function generateAssistantResponse(context, userMessage, userLanguage = 'e
 
         for (const model of geminiModels) {
             const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 10000);
+            const timeoutId = setTimeout(() => controller.abort(), 30000);
             const startTime = Date.now();
 
             try {
@@ -312,7 +312,7 @@ async function generateAssistantResponse(context, userMessage, userLanguage = 'e
             } catch (err) {
                 clearTimeout(timeoutId);
                 if (err.name === 'AbortError') {
-                    console.warn(`Gemini [${model}] request timed out after 10s`);
+                    console.warn(`Gemini [${model}] request timed out after 30s`);
                 } else {
                     console.error(`Gemini [${model}] error:`, err.message);
                 }
