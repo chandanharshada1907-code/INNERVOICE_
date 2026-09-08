@@ -45,7 +45,7 @@ const frontendRoot = path.resolve(__dirname, "..", "..");
 // ─────────────────────────────────────────────────────────────
 const allowedOriginsFromEnv = (process.env.ALLOWED_ORIGINS || process.env.FRONTEND_URL || "")
     .split(",")
-    .map(s => s.trim())
+    .map(s => s.trim().replace(/\/+$/, ""))
     .filter(Boolean);
 
 const defaultAllowedOrigins = [
@@ -54,23 +54,31 @@ const defaultAllowedOrigins = [
 
 app.use(cors({
     origin: function(origin, callback) {
-        // Allow requests with no origin (file://, mobile apps, Postman) and local dev origins
-        if (!origin || /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) {
+        // 1. Allow requests with no origin (file://, mobile apps, Postman)
+        if (!origin) {
             return callback(null, true);
         }
-        // Allow explicit production origins
-        if (defaultAllowedOrigins.includes(origin)) {
+
+        // Clean trailing slashes from incoming origin
+        const cleanOrigin = origin.trim().replace(/\/+$/, "");
+
+        // 2. Allow localhost and 127.0.0.1 development origins
+        if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(cleanOrigin)) {
             return callback(null, true);
         }
-        // Allow production origins configured via environment variables
-        if (allowedOriginsFromEnv.length > 0 && allowedOriginsFromEnv.includes(origin)) {
+
+        // 3. Allow exact production origin
+        if (defaultAllowedOrigins.includes(cleanOrigin)) {
             return callback(null, true);
         }
-        // Allow same-host browser requests on Render (and any *.onrender.com subdomain).
-        if (/^https:\/\/[a-zA-Z0-9-]+\.onrender\.com$/.test(origin)) {
+
+        // 4. Allow environment-configured production origins (normalized)
+        if (allowedOriginsFromEnv.length > 0 && allowedOriginsFromEnv.includes(cleanOrigin)) {
             return callback(null, true);
         }
-        callback(new Error("Not allowed by CORS"));
+
+        // 5. Decline CORS safely without creating an HTTP 500 server error
+        return callback(null, false);
     },
     credentials: true
 }));
