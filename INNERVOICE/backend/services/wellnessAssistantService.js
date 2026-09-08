@@ -265,58 +265,86 @@ async function generateAssistantResponse(context, userMessage, userLanguage = 'e
             "gemini-flash-latest"
         ];
 
+        // Retry delays for 503 UNAVAILABLE: 2s before retry 1, 4s before retry 2
+        const RETRY_DELAYS_MS = [2000, 4000];
+        const MAX_503_RETRIES = 2;
+
         for (const model of geminiModels) {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 30000);
-            const startTime = Date.now();
+            let modelSucceeded = false;
 
-            try {
-                const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${geminiKey}`;
-                const res = await fetch(url, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    signal: controller.signal,
-                    body: JSON.stringify({
-                        contents: [
-                            {
-                                role: "user",
-                                parts: [{ text: `${systemPrompt}\n\nUser: ${userMessage}` }]
-                            }
-                        ],
-                        generationConfig: {
-                            temperature: 0.7,
-                            maxOutputTokens: 800
-                        }
-                    })
-                });
-
-                clearTimeout(timeoutId);
-
-                if (res.ok) {
-                    const data = await res.json();
-                    if (data && data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts) {
-                        const text = data.candidates[0].content.parts.map(p => p.text).join("").trim();
-                        if (text) {
-                            console.log(`🌿 AI Chat response generated via [${model}] in ${Date.now() - startTime}ms`);
-                            return {
-                                reply: text,
-                                isCrisis: false,
-                                available: true
-                            };
-                        }
-                    }
-                } else {
-                    const errText = await res.text().catch(() => "");
-                    console.error(`Gemini [${model}] API status ${res.status}:`, errText.substring(0, 200));
+            for (let attempt = 0; attempt <= MAX_503_RETRIES; attempt++) {
+                // Wait before retries (not before the first attempt)
+                if (attempt > 0) {
+                    const delay = RETRY_DELAYS_MS[attempt - 1] || 4000;
+                    console.warn(`Gemini [${model}] returned 503, retrying in ${delay / 1000}s... (attempt ${attempt + 1}/${MAX_503_RETRIES + 1})`);
+                    await new Promise(resolve => setTimeout(resolve, delay));
                 }
-            } catch (err) {
-                clearTimeout(timeoutId);
-                if (err.name === 'AbortError') {
-                    console.warn(`Gemini [${model}] request timed out after 30s`);
-                } else {
-                    console.error(`Gemini [${model}] error:`, err.message);
+
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 30000);
+                const startTime = Date.now();
+
+                try {
+                    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${geminiKey}`;
+                    const res = await fetch(url, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        signal: controller.signal,
+                        body: JSON.stringify({
+                            contents: [
+                                {
+                                    role: "user",
+                                    parts: [{ text: `${systemPrompt}\n\nUser: ${userMessage}` }]
+                                }
+                            ],
+                            generationConfig: {
+                                temperature: 0.7,
+                                maxOutputTokens: 800
+                            }
+                        })
+                    });
+
+                    clearTimeout(timeoutId);
+
+                    if (res.ok) {
+                        const data = await res.json();
+                        if (data && data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts) {
+                            const text = data.candidates[0].content.parts.map(p => p.text).join("").trim();
+                            if (text) {
+                                console.log(`🌿 AI Chat response generated via [${model}] in ${Date.now() - startTime}ms`);
+                                modelSucceeded = true;
+                                return {
+                                    reply: text,
+                                    isCrisis: false,
+                                    available: true
+                                };
+                            }
+                        }
+                        // Successful HTTP but empty body — don't retry, move to next model
+                        break;
+                    } else {
+                        const errText = await res.text().catch(() => "");
+                        // Only retry on 503 UNAVAILABLE (transient); break immediately on permanent errors
+                        if (res.status === 503 && attempt < MAX_503_RETRIES) {
+                            console.warn(`Gemini [${model}] API status 503: ${errText.substring(0, 100)}`);
+                            // delay + retry handled at top of loop
+                            continue;
+                        }
+                        console.error(`Gemini [${model}] API status ${res.status}:`, errText.substring(0, 200));
+                        break; // permanent error — skip retries, try next model
+                    }
+                } catch (err) {
+                    clearTimeout(timeoutId);
+                    if (err.name === 'AbortError') {
+                        console.warn(`Gemini [${model}] request timed out after 30s`);
+                    } else {
+                        console.error(`Gemini [${model}] error:`, err.message);
+                    }
+                    break; // non-retryable exception — try next model
                 }
             }
+
+            if (modelSucceeded) break;
         }
     }
 
