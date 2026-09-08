@@ -261,9 +261,8 @@ async function generateAssistantResponse(context, userMessage, userLanguage = 'e
     // 1. Google Gemini API — Uses official production models with 10s AbortController timeout
     if (geminiKey) {
         const geminiModels = [
-            "gemini-1.5-flash",
-            "gemini-2.0-flash",
-            "gemini-1.5-pro"
+            "gemini-3.6-flash",
+            "gemini-flash-latest"
         ];
 
         for (const model of geminiModels) {
