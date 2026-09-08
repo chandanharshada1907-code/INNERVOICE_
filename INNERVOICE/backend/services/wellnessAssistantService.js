@@ -25,13 +25,39 @@ function getCrisisResponse() {
 async function buildWellnessContext(userId) {
     try {
         const pool = db.promise();
+        const today = new Date().toISOString().slice(0, 10);
         
-        // 1. Get User Profile & Streak
-        const [users] = await pool.query("SELECT name, streak FROM users WHERE id = ?", [userId]);
-        const user = users[0] || { name: 'Friend', streak: 0 };
-        
-        // 2. Latest Mood & Mood Trend
-        const [moods] = await pool.query("SELECT mood, created_at FROM moods WHERE user_id = ? ORDER BY created_at DESC LIMIT 5", [userId]);
+        // Parallelize independent database queries
+        const [
+            usersRes,
+            moodsRes,
+            activeHabitsRes,
+            activeGoalsRes,
+            completedGoalsRes,
+            journalsRes,
+            scoresRes,
+            planRes
+        ] = await Promise.all([
+            // 1. Profile & streak
+            pool.query("SELECT name, streak FROM users WHERE id = ?", [userId]).catch(() => [[{ name: 'Friend', streak: 0 }]]),
+            // 2. Latest Mood & Mood Trend
+            pool.query("SELECT mood, created_at FROM moods WHERE user_id = ? ORDER BY created_at DESC LIMIT 5", [userId]).catch(() => [[]]),
+            // 3. Habits Info
+            pool.query("SELECT COUNT(*) as activeCount FROM habits WHERE user_id = ? AND active = TRUE", [userId]).catch(() => [[{ activeCount: 0 }]]),
+            // 4. Active Goals Info
+            pool.query("SELECT COUNT(*) as activeCount FROM goals WHERE user_id = ? AND completed = FALSE", [userId]).catch(() => [[{ activeCount: 0 }]]),
+            // 5. Completed Goals Info
+            pool.query("SELECT COUNT(*) as compCount FROM goals WHERE user_id = ? AND completed = TRUE", [userId]).catch(() => [[{ compCount: 0 }]]),
+            // 6. Journal Frequency (Last 7 days)
+            pool.query("SELECT COUNT(*) as jCount FROM journals WHERE user_id = ? AND created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)", [userId]).catch(() => [[{ jCount: 0 }]]),
+            // 7. Latest Wellness Score
+            pool.query("SELECT score FROM wellness_scores WHERE user_id = ? ORDER BY score_date DESC LIMIT 1", [userId]).catch(() => [[]]),
+            // 8. Today's Daily Plan
+            pool.query("SELECT id, completion_percentage FROM daily_plans WHERE user_id = ? AND plan_date = ?", [userId, today]).catch(() => [[]])
+        ]);
+
+        const user = (usersRes[0] && usersRes[0][0]) || { name: 'Friend', streak: 0 };
+        const moods = (moodsRes && moodsRes[0]) || [];
         const latestMood = moods.length > 0 ? moods[0].mood : null;
         
         // Basic mood trend
@@ -48,51 +74,42 @@ async function buildWellnessContext(userId) {
             else moodTrend = "Fluctuating";
         }
         
-        // 3. Habits Info
-        const [activeHabitsRes] = await pool.query("SELECT COUNT(*) as activeCount FROM habits WHERE user_id = ? AND active = TRUE", [userId]).catch(() => [[{ activeCount: 0 }]]);
-        
-        // 4. Goals Info
-        const [activeGoalsRes] = await pool.query("SELECT COUNT(*) as activeCount FROM goals WHERE user_id = ? AND completed = FALSE", [userId]).catch(() => [[{ activeCount: 0 }]]);
-        const [completedGoalsRes] = await pool.query("SELECT COUNT(*) as compCount FROM goals WHERE user_id = ? AND completed = TRUE", [userId]).catch(() => [[{ compCount: 0 }]]);
-
-        // 5. Journal Frequency (Last 7 days)
-        const [journalsRes] = await pool.query("SELECT COUNT(*) as jCount FROM journals WHERE user_id = ? AND created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)", [userId]).catch(() => [[{ jCount: 0 }]]);
-        
-        // 6. Latest Wellness Score
         let score = null;
-        try {
-            const [scoresRes] = await pool.query("SELECT score FROM wellness_scores WHERE user_id = ? ORDER BY score_date DESC LIMIT 1", [userId]);
-            if (scoresRes.length > 0) score = scoresRes[0].score;
-        } catch(err) { /* ignore if no table */ }
+        if (scoresRes && scoresRes[0] && scoresRes[0].length > 0) {
+            score = scoresRes[0][0].score;
+        }
 
-        // 7. Today's Daily Plan
         let dailyPlan = { completedPercentage: 0, items: [] };
-        try {
-            const today = new Date().toISOString().slice(0, 10);
-            const [planRes] = await pool.query("SELECT id, completion_percentage FROM daily_plans WHERE user_id = ? AND plan_date = ?", [userId, today]);
-            if (planRes.length > 0) {
-                dailyPlan.completedPercentage = planRes[0].completion_percentage;
-                const [itemsRes] = await pool.query("SELECT title, priority, completed, estimated_minutes FROM daily_plan_items WHERE daily_plan_id = ?", [planRes[0].id]);
-                dailyPlan.items = itemsRes;
-            }
-        } catch(err) { /* ignore */ }
+        if (planRes && planRes[0] && planRes[0].length > 0) {
+            const planRow = planRes[0][0];
+            dailyPlan.completedPercentage = planRow.completion_percentage;
+            try {
+                const [itemsRes] = await pool.query("SELECT title, priority, completed, estimated_minutes FROM daily_plan_items WHERE daily_plan_id = ?", [planRow.id]);
+                dailyPlan.items = itemsRes || [];
+            } catch(err) { /* ignore */ }
+        }
+
+        const activeHabitsCount = (activeHabitsRes[0] && activeHabitsRes[0][0]) ? activeHabitsRes[0][0].activeCount : 0;
+        const activeGoalsCount = (activeGoalsRes[0] && activeGoalsRes[0][0]) ? activeGoalsRes[0][0].activeCount : 0;
+        const completedGoalsCount = (completedGoalsRes[0] && completedGoalsRes[0][0]) ? completedGoalsRes[0][0].compCount : 0;
+        const journalEntriesCount = (journalsRes[0] && journalsRes[0][0]) ? journalsRes[0][0].jCount : 0;
 
         return {
-            name: user.name,
-            streak: user.streak,
+            name: user.name || 'Friend',
+            streak: user.streak || 0,
             mood: {
                 latest: latestMood,
                 trend: moodTrend
             },
             habits: {
-                active: activeHabitsRes[0].activeCount
+                active: activeHabitsCount
             },
             goals: {
-                active: activeGoalsRes[0].activeCount,
-                completed: completedGoalsRes[0].compCount
+                active: activeGoalsCount,
+                completed: completedGoalsCount
             },
             journal: {
-                entriesThisWeek: journalsRes[0].jCount
+                entriesThisWeek: journalEntriesCount
             },
             wellnessScore: score,
             dailyPlan: dailyPlan
@@ -111,7 +128,7 @@ const EIGHTH_SCHEDULE_LANGUAGES = {
     "gu": "Gujarati (ગુજરાતી)",
     "hi": "Hindi (हिन्दी)",
     "kn": "Kannada (ಕನ್ನಡ)",
-    "ks": "Kashmiri (कॉशुर)",
+    "ks": "Kashmiri (कॉশুর)",
     "kok": "Konkani (कोंकणी)",
     "mai": "Maithili (मैथिली)",
     "ml": "Malayalam (മലയാളം)",
@@ -200,7 +217,7 @@ function getFallbackInteractiveResponse(userMessage, context) {
  * Generates an AI response.
  * - If crisis keywords are present: returns verified crisis helplines.
  * - If a real AI provider (GEMINI_API_KEY or OPENAI_API_KEY) is configured: calls provider.
- * - If NO AI provider is configured: returns a clear service-unavailable response (no fake AI) for test queries, and local fallback otherwise.
+ * - If NO AI provider is configured: returns a clear service-unavailable response for test queries, and local fallback otherwise.
  */
 async function generateAssistantResponse(context, userMessage, userLanguage = 'en') {
     if (!userMessage || String(userMessage).trim() === "") {
@@ -222,8 +239,6 @@ async function generateAssistantResponse(context, userMessage, userLanguage = 'e
     const geminiKey = process.env.GEMINI_API_KEY || process.env.AI_API_KEY;
     const openaiKey = process.env.OPENAI_API_KEY;
 
-    console.log("DEBUG generateAssistantResponse geminiKey present:", !!geminiKey, "len:", geminiKey ? geminiKey.length : 0);
-
     // Strict requirement: Do not return fake simulated responses if no AI provider is configured.
     if (!geminiKey && !openaiKey) {
         if (userMessage === "How am I feeling today?") {
@@ -243,21 +258,25 @@ async function generateAssistantResponse(context, userMessage, userLanguage = 'e
 
     const systemPrompt = buildSystemPrompt(context, userLanguage);
 
-    // 1. Google Gemini API — models confirmed available via ListModels + direct test
+    // 1. Google Gemini API — Uses official production models with 10s AbortController timeout
     if (geminiKey) {
         const geminiModels = [
-            "gemini-flash-latest",
-            "gemini-flash-lite-latest",
-            "gemini-3-flash-preview",
-            "gemini-3.5-flash",
-            "gemini-3.7-flash"
+            "gemini-1.5-flash",
+            "gemini-2.0-flash",
+            "gemini-1.5-pro"
         ];
+
         for (const model of geminiModels) {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 10000);
+            const startTime = Date.now();
+
             try {
                 const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${geminiKey}`;
                 const res = await fetch(url, {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
+                    signal: controller.signal,
                     body: JSON.stringify({
                         contents: [
                             {
@@ -272,11 +291,14 @@ async function generateAssistantResponse(context, userMessage, userLanguage = 'e
                     })
                 });
 
+                clearTimeout(timeoutId);
+
                 if (res.ok) {
                     const data = await res.json();
                     if (data && data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts) {
                         const text = data.candidates[0].content.parts.map(p => p.text).join("").trim();
                         if (text) {
+                            console.log(`🌿 AI Chat response generated via [${model}] in ${Date.now() - startTime}ms`);
                             return {
                                 reply: text,
                                 isCrisis: false,
@@ -286,11 +308,15 @@ async function generateAssistantResponse(context, userMessage, userLanguage = 'e
                     }
                 } else {
                     const errText = await res.text().catch(() => "");
-                    console.error(`Gemini [${model}] API error:`, res.status, errText.substring(0, 300));
-                    // Continue to next model if this one fails or is rate limited
+                    console.error(`Gemini [${model}] API status ${res.status}:`, errText.substring(0, 200));
                 }
             } catch (err) {
-                console.error(`Gemini [${model}] request failed:`, err.message);
+                clearTimeout(timeoutId);
+                if (err.name === 'AbortError') {
+                    console.warn(`Gemini [${model}] request timed out after 10s`);
+                } else {
+                    console.error(`Gemini [${model}] error:`, err.message);
+                }
             }
         }
     }
