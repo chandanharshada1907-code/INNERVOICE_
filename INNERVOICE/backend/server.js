@@ -48,10 +48,18 @@ const allowedOriginsFromEnv = (process.env.ALLOWED_ORIGINS || process.env.FRONTE
     .map(s => s.trim())
     .filter(Boolean);
 
+const defaultAllowedOrigins = [
+    "https://innervoice-rxwh.onrender.com"
+];
+
 app.use(cors({
     origin: function(origin, callback) {
         // Allow requests with no origin (file://, mobile apps, Postman) and local dev origins
         if (!origin || /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) {
+            return callback(null, true);
+        }
+        // Allow explicit production origins
+        if (defaultAllowedOrigins.includes(origin)) {
             return callback(null, true);
         }
         // Allow production origins configured via environment variables
@@ -59,8 +67,6 @@ app.use(cors({
             return callback(null, true);
         }
         // Allow same-host browser requests on Render (and any *.onrender.com subdomain).
-        // NOTE: browsers include the Origin header even for same-origin POSTs per the Fetch
-        // spec, so this check is required even when frontend and backend share one service.
         if (/^https:\/\/[a-zA-Z0-9-]+\.onrender\.com$/.test(origin)) {
             return callback(null, true);
         }
