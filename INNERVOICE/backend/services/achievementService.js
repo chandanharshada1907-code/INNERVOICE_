@@ -125,78 +125,93 @@ function evaluateAchievements(userId, callback) {
 
             // Gather counts
             const counts = {
+                moods: 0,
                 reflections: 0,
                 journals: 0,
                 goals: 0,
+                goals_created: 0,
                 streak: 0,
                 focus: 0,
                 habit: 0,
                 habit_streak: 0,
                 weekly_report: 0,
                 consistency: 0,
+                chat: 0,
+                user_xp: 0,
                 level: 1,
                 hasActivity: false
             };
 
-            let pending = 8;
+            let pending = 9;
             function doneQuery() {
                 pending--;
                 if (pending === 0) doEvaluation();
             }
 
-            // 1. Reflections count
+            // 1. Moods count
+            db.query("SELECT COUNT(*) AS c FROM moods WHERE user_id = ?", [userId], (e, r) => {
+                if (!e && r && r[0]) counts.moods = r[0].c;
+                if (counts.moods > 0) counts.hasActivity = true;
+                doneQuery();
+            });
+
+            // 2. Reflections count
             db.query("SELECT COUNT(*) AS c FROM reflections WHERE user_id = ?", [userId], (e, r) => {
                 if (!e && r && r[0]) counts.reflections = r[0].c;
                 if (counts.reflections > 0) counts.hasActivity = true;
                 doneQuery();
             });
 
-            // 2. Journals count
+            // 3. Journals count
             db.query("SELECT COUNT(*) AS c FROM journals WHERE user_id = ?", [userId], (e, r) => {
                 if (!e && r && r[0]) counts.journals = r[0].c;
                 if (counts.journals > 0) counts.hasActivity = true;
                 doneQuery();
             });
 
-            // 3. Goals completed count
+            // 4. Goals completed count
             db.query("SELECT COUNT(*) AS c FROM goals WHERE user_id = ? AND completed = 1", [userId], (e, r) => {
                 if (!e && r && r[0]) counts.goals = r[0].c;
                 if (counts.goals > 0) counts.hasActivity = true;
                 doneQuery();
             });
 
-            // 4. Activity Streak (from users table)
-            db.query("SELECT streak, level FROM users WHERE id = ?", [userId], (e, r) => {
+            // 5. Goals created count
+            db.query("SELECT COUNT(*) AS c FROM goals WHERE user_id = ?", [userId], (e, r) => {
+                if (!e && r && r[0]) counts.goals_created = r[0].c;
+                if (counts.goals_created > 0) counts.hasActivity = true;
+                doneQuery();
+            });
+
+            // 6. User streak, xp, level
+            db.query("SELECT streak, xp, level FROM users WHERE id = ?", [userId], (e, r) => {
                 if (!e && r && r[0]) {
                     counts.streak = r[0].streak || 0;
+                    counts.user_xp = r[0].xp || 0;
                     counts.level = r[0].level || 1;
                 }
                 doneQuery();
             });
 
-            // 5. Focus sessions (including wellness meditations/breathings)
+            // 7. Focus sessions
             db.query("SELECT COUNT(*) AS c FROM focus_sessions WHERE user_id = ? AND completed = 1", [userId], (e, r) => {
                 if (!e && r && r[0]) counts.focus = r[0].c;
                 if (counts.focus > 0) counts.hasActivity = true;
                 doneQuery();
             });
 
-            // 6. Habit completions
+            // 8. Habit completions
             db.query("SELECT COUNT(*) AS c FROM habit_completions WHERE habit_id IN (SELECT id FROM habits WHERE user_id = ?)", [userId], (e, r) => {
                 if (!e && r && r[0]) counts.habit = r[0].c;
                 if (counts.habit > 0) counts.hasActivity = true;
+                counts.habit_streak = counts.streak || 0;
                 doneQuery();
             });
-            
-            // 7. Habit Max Streak - use user's overall streak as proxy since habits table has no streak column
-            counts.habit_streak = counts.streak || 0;
-            doneQuery();
 
-            // 8. Wait, Weekly reports generated (not tracked natively in a table easily, but we can approximate or use journals/reflections).
-            // Actually, we don't store weekly reports generated count. We will skip exact calculation or just check if there's sufficient data. Let's assume count from daily plans or moods.
-            db.query("SELECT COUNT(*) AS c FROM moods WHERE user_id = ?", [userId], (e, r) => {
-                if (!e && r && r[0]) counts.weekly_report = Math.floor(r[0].c / 7); // Approx
-                if(r && r[0] && r[0].c > 0) counts.hasActivity = true;
+            // 9. AI Chat messages
+            db.query("SELECT COUNT(*) AS c FROM chat_messages WHERE user_id = ?", [userId], (e, r) => {
+                if (!e && r && r[0]) counts.chat = r[0].c;
+                if (counts.chat > 0) counts.hasActivity = true;
                 doneQuery();
             });
 
@@ -205,61 +220,134 @@ function evaluateAchievements(userId, callback) {
                 const newlyUnlocked = [];
                 const resultList = [];
 
+                const META_BY_CODE = {
+                    first_mood:       { name: 'First Feeling',    description: 'Log your very first mood',                  target: 1,   tier: 'Bronze', xp_reward: 20,  category: 'mood',        icon: '😊' },
+                    mood_7:           { name: 'Week of Feelings', description: 'Log mood 7 days in a row',                  target: 7,   tier: 'Silver', xp_reward: 50,  category: 'mood',        icon: '🌈' },
+                    mood_30:          { name: 'Mood Master',      description: 'Log mood for 30 days',                      target: 30,  tier: 'Gold',   xp_reward: 150, category: 'mood',        icon: '🏆' },
+                    first_journal:    { name: 'Dear Diary',       description: 'Write your first journal entry',             target: 1,   tier: 'Bronze', xp_reward: 20,  category: 'journal',     icon: '📔' },
+                    journal_10:       { name: 'Reflective Mind',  description: 'Write 10 journal entries',                   target: 10,  tier: 'Silver', xp_reward: 75,  category: 'journal',     icon: '✍️' },
+                    first_goal:       { name: 'Goal Setter',      description: 'Create your first goal',                     target: 1,   tier: 'Bronze', xp_reward: 20,  category: 'goal',        icon: '🎯' },
+                    goals_5:          { name: 'Achiever',         description: 'Complete 5 goals',                           target: 5,   tier: 'Silver', xp_reward: 50,  category: 'goal',        icon: '⭐' },
+                    streak_3:         { name: 'Three-Day Streak', description: 'Maintain a 3-day wellness streak',           target: 3,   tier: 'Bronze', xp_reward: 30,  category: 'streak',      icon: '🔥' },
+                    streak_7:         { name: 'Week Warrior',     description: 'Maintain a 7-day wellness streak',           target: 7,   tier: 'Silver', xp_reward: 70,  category: 'streak',      icon: '💪' },
+                    streak_30:        { name: 'Monthly Champion', description: 'Maintain a 30-day wellness streak',          target: 30,  tier: 'Gold',   xp_reward: 200, category: 'streak',      icon: '👑' },
+                    first_reflection: { name: 'Inner Voice',      description: 'Complete your first self-reflection',        target: 1,   tier: 'Bronze', xp_reward: 25,  category: 'reflection',  icon: '🪞' },
+                    first_chat:       { name: 'Wellness Chat',    description: 'Have your first chat with the AI assistant', target: 1,   tier: 'Bronze', xp_reward: 20,  category: 'chat',        icon: '🤖' },
+                    xp_100:           { name: 'XP Milestone',     description: 'Earn 100 XP through wellness activities',    target: 100, tier: 'Bronze', xp_reward: 50,  category: 'xp',          icon: '⚡' },
+                    xp_500:           { name: 'XP Champion',      description: 'Earn 500 XP through wellness activities',    target: 500, tier: 'Silver', xp_reward: 100, category: 'xp',          icon: '💫' }
+                };
+
                 achievementDefs.forEach(def => {
                     let current = 0;
                     let helperText = "";
 
                     switch (def.code) {
+                        case "first_mood":
                         case "first_step":
-                            current = counts.hasActivity ? 1 : 0;
-                            helperText = current >= 1 ? "Completed!" : "Log your first activity.";
+                            current = counts.moods >= 1 || counts.hasActivity ? 1 : 0;
+                            helperText = current >= 1 ? "Completed!" : "Log your first mood.";
                             break;
+                        case "mood_7":
+                            current = Math.min(7, counts.moods);
+                            helperText = current >= 7 ? "Completed!" : `Log mood 7 days (${current}/7).`;
+                            break;
+                        case "mood_30":
+                            current = Math.min(30, counts.moods);
+                            helperText = current >= 30 ? "Completed!" : `Log mood for 30 days (${current}/30).`;
+                            break;
+
+                        case "first_journal":
+                            current = counts.journals >= 1 ? 1 : 0;
+                            helperText = current >= 1 ? "Completed!" : "Write your first journal entry.";
+                            break;
+                        case "journal_10":
                         case "reflective_mind":
-                            current = counts.journals;
-                            helperText = current >= 5 ? "Completed!" : `Write ${5 - current} more journal entries.`;
+                            current = Math.min(10, counts.journals);
+                            helperText = current >= 10 ? "Completed!" : `Write 10 journal entries (${current}/10).`;
                             break;
-                        case "deep_reflection":
-                            current = counts.reflections;
-                            helperText = current >= 10 ? "Completed!" : `Complete ${10 - current} more reflections.`;
+
+                        case "first_goal":
+                            current = (counts.goals_created || counts.goals) >= 1 ? 1 : 0;
+                            helperText = current >= 1 ? "Completed!" : "Create your first goal.";
                             break;
+                        case "goals_5":
+                        case "goal_getter":
+                            current = Math.min(5, counts.goals);
+                            helperText = current >= 5 ? "Completed!" : `Complete 5 goals (${current}/5).`;
+                            break;
+
+                        case "streak_3":
+                            current = Math.min(3, counts.streak);
+                            helperText = current >= 3 ? "Completed!" : `Reach a 3-day streak (${current}/3).`;
+                            break;
+                        case "streak_7":
                         case "week_strong":
-                            current = counts.streak;
+                            current = Math.min(7, counts.streak);
                             helperText = current >= 7 ? "Completed!" : `Reach a 7-day streak (${current}/7).`;
                             break;
+                        case "streak_30":
+                        case "habit_master":
+                            current = Math.min(30, counts.streak);
+                            helperText = current >= 30 ? "Completed!" : `Reach a 30-day streak (${current}/30).`;
+                            break;
+
+                        case "first_reflection":
+                        case "deep_reflection":
+                            current = counts.reflections >= 1 ? 1 : 0;
+                            helperText = current >= 1 ? "Completed!" : "Complete your first self-reflection.";
+                            break;
+
+                        case "first_chat":
+                            current = counts.chat >= 1 ? 1 : 0;
+                            helperText = current >= 1 ? "Completed!" : "Have your first AI chat.";
+                            break;
+
+                        case "xp_100":
+                            current = Math.min(100, counts.user_xp);
+                            helperText = current >= 100 ? "Completed!" : `Earn 100 XP (${current}/100).`;
+                            break;
+                        case "xp_500":
+                        case "innervoice_champion":
+                            current = Math.min(500, counts.user_xp);
+                            helperText = current >= 500 ? "Completed!" : `Earn 500 XP (${current}/500).`;
+                            break;
+
                         case "mindful_routine":
                             current = counts.focus;
-                            helperText = current >= 20 ? "Completed!" : `Complete ${20 - current} more focus sessions.`;
+                            helperText = current >= 20 ? "Completed!" : `Complete focus sessions (${current}/20).`;
                             break;
                         case "habit_builder":
                             current = counts.habit;
-                            helperText = current >= 25 ? "Completed!" : `Complete ${25 - current} more habit sessions.`;
-                            break;
-                        case "habit_master":
-                            current = counts.habit_streak;
-                            helperText = current >= 30 ? "Completed!" : `Current max streak: ${current}/30 days.`;
-                            break;
-                        case "goal_getter":
-                            current = counts.goals;
-                            helperText = current >= 5 ? "Completed!" : `Complete ${5 - current} more goals.`;
+                            helperText = current >= 25 ? "Completed!" : `Complete habit sessions (${current}/25).`;
                             break;
                         case "wellness_explorer":
                             current = counts.weekly_report;
-                            helperText = current >= 4 ? "Completed!" : `Generate ${4 - current} more weekly reports.`;
+                            helperText = current >= 4 ? "Completed!" : `Generate weekly reports (${current}/4).`;
                             break;
                         case "consistency_champion":
-                            // Proxy approximation for this logic
                             current = Math.min(4, Math.floor(counts.habit_streak / 7));
-                            helperText = current >= 4 ? "Completed!" : `Hit weekly consistency: ${current}/4 weeks.`;
+                            helperText = current >= 4 ? "Completed!" : `Hit weekly consistency (${current}/4).`;
                             break;
-                        case "innervoice_champion":
-                            current = counts.level;
-                            helperText = current >= 8 ? "Completed!" : `Reach Level 8 (${current}/8).`;
-                            break;
+
                         default:
                             current = 0;
+                            helperText = "In Progress";
                     }
 
-                    const target = def.target || 1;
+                    const meta = META_BY_CODE[def.code] || {};
+                    const name = def.name || meta.name;
+                    const description = (def.code === 'streak_30' ? 'Maintain a 30-day wellness streak' : (def.description || meta.description));
+                    const target = (def.code === 'streak_30' ? 30 : (def.target || meta.target || 1));
+                    const tier = (def.code === 'streak_30' ? 'Gold' : (def.tier || meta.tier || 'Bronze'));
+                    const xp_reward = (def.code === 'streak_30' ? 200 : (def.xp_reward || meta.xp_reward || (target * 10)));
+                    const category = def.category || meta.category || 'general';
+
+                    // Ensure icon is valid UTF-8 emoji and not corrupted mojibake
+                    let icon = def.icon;
+                    if (!icon || /[ƒÿèîêÅå?]/.test(icon) || meta.icon) {
+                        icon = meta.icon || icon || "🏆";
+                    }
+
                     const isQualified = current >= target;
                     const wasAlreadyUnlocked = Boolean(alreadyUnlockedMap[def.id] || alreadyUnlockedMap[def.code]);
                     const isUnlocked = isQualified || wasAlreadyUnlocked;
@@ -273,12 +361,12 @@ function evaluateAchievements(userId, callback) {
                     resultList.push({
                         id: def.id,
                         code: def.code,
-                        name: def.name,
-                        description: def.description,
-                        icon: def.icon,
-                        tier: def.tier,
-                        xp_reward: def.xp_reward,
-                        category: def.category,
+                        name: name,
+                        description: description,
+                        icon: icon,
+                        tier: tier,
+                        xp_reward: xp_reward,
+                        category: category,
                         target: target,
                         current: Math.min(current, target),
                         percentage: Math.min(100, Math.round((current / target) * 100)),

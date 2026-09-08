@@ -8985,19 +8985,22 @@ document.addEventListener("DOMContentLoaded", function () {
                     const unlockedClass = ach.is_unlocked ? "unlocked" : "locked";
                     const bg = ach.is_unlocked ? "white" : "#f9fafb";
                     const border = ach.is_unlocked ? "2px solid #a7f3d0" : "2px solid #f3f4f6";
+                    const tierLabel = ach.tier || (ach.category ? (ach.category.charAt(0).toUpperCase() + ach.category.slice(1)) : 'Bronze');
+                    const xpVal = (ach.xp_reward !== undefined && ach.xp_reward !== null) ? ach.xp_reward : ((ach.target || 1) * 10);
+                    const cleanIcon = (ach.icon && !/[ƒÿèîêÅå?]/.test(ach.icon)) ? ach.icon : '🏆';
                     const tierColors = { 'Bronze': '#b45309', 'Silver': '#4b5563', 'Gold': '#b45309', 'Platinum': '#4338ca' };
-                    const tierColor = tierColors[ach.tier] || '#6b7280';
+                    const tierColor = tierColors[tierLabel] || '#6b7280';
                     
                     card.style.cssText = `background: ${bg}; border: ${border}; border-radius: 16px; padding: 20px; text-align: center; position: relative; transition: transform 0.2s;`;
                     card.className = `ach-card ${unlockedClass}`;
                     
                     card.innerHTML = `
-                        <div style="font-size: 40px; margin-bottom: 10px; ${ach.is_unlocked ? '' : 'filter: grayscale(100%) opacity(0.5);'}">${ach.icon}</div>
+                        <div style="font-size: 40px; margin-bottom: 10px; ${ach.is_unlocked ? '' : 'filter: grayscale(100%) opacity(0.5);'}">${cleanIcon}</div>
                         <h4 style="margin: 0 0 5px; color: #111827;">${ach.name}</h4>
                         <p style="font-size: 13px; color: #6b7280; margin-bottom: 15px; min-height: 38px;">${ach.description}</p>
                         
                         <div style="font-size: 11px; font-weight: 700; color: ${tierColor}; background: ${ach.is_unlocked ? '#f0fdf4' : '#f3f4f6'}; padding: 4px 8px; border-radius: 12px; display: inline-block; margin-bottom: 15px;">
-                            ${ach.tier} &bull; ${ach.xp_reward} XP
+                            ${tierLabel} &bull; ${xpVal} XP
                         </div>
                         
                         <div style="text-align: left;">
