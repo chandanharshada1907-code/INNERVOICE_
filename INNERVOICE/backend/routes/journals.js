@@ -658,7 +658,7 @@ router.post("/analyze", verifyToken, async (req, res) => {
     // 2. OpenAI as final fallback (with retry + backoff)
 
     if (geminiKey) {
-        const geminiModels = ["gemini-2.5-flash", "gemini-flash-latest"];
+        const geminiModels = ["gemini-3.6-flash", "gemini-flash-latest"];
         for (let mi = 0; mi < geminiModels.length; mi++) {
             const model  = geminiModels[mi];
             const parsed = await tryGeminiModel(model);
